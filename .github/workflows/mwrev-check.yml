@@ -16,13 +16,32 @@ jobs:
   cpu:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mwrev_test
+          POSTGRES_PASSWORD: local_ci_fixture_only
+          POSTGRES_DB: mwrev_test
+        options: >-
+          --health-cmd "pg_isready -U mwrev_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 8
+        ports:
+          - 5432:5432
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
       - name: Python contract tests
+        env:
+          MWREV_TEST_DATABASE_URL: postgresql://mwrev_test:local_ci_fixture_only@localhost:5432/mwrev_test
         run: |
-          for suite in mwrev-candidate mwrev-gateway mwrev-runner mwrev-inference; do
+          python3 -m venv "$RUNNER_TEMP/mwrev-tests"
+          source "$RUNNER_TEMP/mwrev-tests/bin/activate"
+          python3 -m pip install 'psycopg[binary]==3.2.10'
+          for suite in mwrev-candidate mwrev-gateway mwrev-runner mwrev-inference mwrev-publisher; do
             python3 -m unittest discover -s "$suite" -v || exit 1
           done
       - name: Install CPU build tools

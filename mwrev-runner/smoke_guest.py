@@ -38,7 +38,7 @@ def main(wasmtime, component):
         result = run(wasi_arguments(Path(wasmtime).resolve(), Path(component).resolve(),
                                     work, inputs), model,
                      {"head": meta["head"], "base": meta["base"], "pr_number": 23,
-                      "repo": "https://github.com/example/wrev-fixture"})
+                      "repo": "https://github.com/example/wrev-fixture"}, synthetic_fixture_debug=True)
         if turns != 2 or result["findings"] != []:
             raise RuntimeError("unexpected fixture outcome")
         print("Wasmtime mounted evidence, tool call, result, and pinned review passed")

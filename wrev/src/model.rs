@@ -4,7 +4,10 @@ pub use reqwest::blocking::Client;
 #[cfg(all(target_os = "wasi", target_env = "p2"))]
 pub type Client = std::time::Duration;
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader};
+#[cfg(any(test, not(all(target_os = "wasi", target_env = "p2", feature = "mwrev-host-stdio"))))]
+use std::io::BufRead;
+#[cfg(not(all(target_os = "wasi", target_env = "p2", feature = "mwrev-host-stdio")))]
+use std::io::BufReader;
 
 #[cfg(not(all(target_os = "wasi", target_env = "p2")))]
 pub fn client() -> Result<Client> {
@@ -121,6 +124,7 @@ pub fn prompt(
 }
 
 // SSE data can span multiple lines. Only a completed response is a successful turn.
+#[cfg(any(test, not(all(target_os = "wasi", target_env = "p2", feature = "mwrev-host-stdio"))))]
 fn read_completed(reader: impl BufRead) -> Result<Vec<Value>> {
     let mut data = String::new();
     for line in reader.lines().chain(std::iter::once(Ok(String::new()))) {

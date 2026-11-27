@@ -18,6 +18,7 @@ def wasi_arguments(wasmtime: Path, component: Path, snapshot: Path, request_dir:
     return [str(wasmtime), "run", "--dir", f"{snapshot}::/work",
             "--dir", f"{request_dir}::/input",
             "--env", "WREV_MODEL_TRANSPORT=host-stdio",
+            "--env", "OPENAI_MODEL=thinkingmachines/Inkling-2-Mini",
             "--env", "WREV_MODEL_TIMEOUT_SECS=180",
             "--env", "WREV_SCRIPT_MEMORY_BYTES=104857600",
             "--env", "WREV_SCRIPT_OUTPUT_BYTES=104857600",
@@ -71,11 +72,11 @@ def send(stream, frame, deadline):
         except BlockingIOError:
             continue
 
-def run(command, model_call, expected):
+def run(command, model_call, expected, *, synthetic_fixture_debug=False):
     """model_call(body, remaining_seconds) returns the completed output array."""
     deadline = time.monotonic() + REVIEW_TIMEOUT_SECONDS
     with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                          stderr=subprocess.DEVNULL, env={}, bufsize=0) as guest:
+                          stderr=None if synthetic_fixture_debug else subprocess.DEVNULL, env={}, bufsize=0) as guest:
         try:
             frames = Frames(guest.stdout)
             turns = 0
