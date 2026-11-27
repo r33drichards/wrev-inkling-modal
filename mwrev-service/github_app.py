@@ -98,6 +98,7 @@ class Pull:
     def __init__(self, repo, pr, token, request=api):
         if not SLUG.fullmatch(repo) or any(x in (".", "..") for x in repo.split("/")):
             raise ValueError("invalid configured repository")
+        self.repo = repo
         self.root = f"/repos/{repo}"
         self.pr = positive(pr)
         self.token = token

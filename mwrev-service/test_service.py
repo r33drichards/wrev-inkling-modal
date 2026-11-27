@@ -83,3 +83,23 @@ class WorkerTest(IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError, "outside"):
                 worker.pull(7,11,41)
             api.assert_called_once_with("GET", "/repositories/11", "scoped")
+
+    def test_publish_persisted_findings_before_removing_label(self):
+        from comment import marker
+        worker = service.Worker(None, SimpleNamespace(app_id=2, comments=True))
+        head, base = "a"*40, "b"*40
+        api = Mock(repo="owner/repo")
+        api.get_comment.return_value = {"performed_via_github_app":{"id":2},
+                                        "body":"started\n"+marker(25)}
+        api.get_pull.return_value = {"state":"open","head":{"sha":head},"base":{"sha":base},
+                                     "labels":[{"name":"mrev"}]}
+        payload = {"state":"completed","review":{"findings":[
+            {"file":"src/lib.rs","start_line":4,"end_line":8,"message":"Persisted exact message"}
+        ]}}
+        worker.publish_terminal(api,25,head,base,64,payload)
+        api.clear_trigger.assert_called_once_with("mrev")
+        body = api.edit_comment.call_args.args[1]
+        self.assertIn("Persisted exact message", body)
+        self.assertIn(f"https://github.com/owner/repo/blob/{head}/src/lib.rs#L4-L8", body)
+        self.assertLess([call[0] for call in api.mock_calls].index("edit_comment"),
+                        [call[0] for call in api.mock_calls].index("clear_trigger"))

@@ -99,9 +99,9 @@ class Worker:
     def publish_terminal(self, write, id, head, base, comment_id, result):
         outcome = result["state"]
         if comment_id is not None:
-            outcome = finish(write, review_id=id, head=head, app_id=self.config.app_id,
+            outcome = finish(write, review_id=id, head=head, base=base, app_id=self.config.app_id,
                              comment_id=comment_id, outcome=outcome,
-                             findings_count=len(result.get("review", {}).get("findings", [])))
+                             findings=result.get("review", {}).get("findings", []))
         if outcome not in {"completed", "failed"}:
             return
         # Do not clear another revision's trigger. Check after the edit, as

@@ -3,7 +3,8 @@
 Apply `mwrev` or its alias `mrev` to an open GitHub pull request, including drafts.
 The GitHub App must be installed on the PR's **base repository** under the
 configured account. Unlabeled PRs do not run. The app posts a start comment,
-updates it with the outcome, and removes the trigger label after success or
+updates it with the outcome and findings linked to the reviewed commit, and
+removes the trigger label after success or
 terminal failure. It leaves the label in place during retries.
 
 ```text
