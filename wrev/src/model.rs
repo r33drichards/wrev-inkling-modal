@@ -72,7 +72,7 @@ pub fn write_host_frame(frame: &Value) -> Result<()> {
 
 #[cfg(all(target_os = "wasi", target_env = "p2", feature = "mwrev-host-stdio"))]
 fn prompt_host(body: Value) -> Result<Vec<Value>> {
-    use std::io::Read;
+    use std::io::{BufRead, Read};
     write_host_frame(&json!({"type": "model.request", "body": body}))?;
     let mut line = Vec::new();
     let limit = 8 * 1024 * 1024;
