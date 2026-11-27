@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="965" viewBox="0 0 960 965" role="img" aria-labelledby="title desc">
 <title id="title">Wrev on Modal: one function call per review</title>
-<desc id="desc">GitHub sends a signed label event. A Python webhook verifies it, saves a deduplicated review row in Postgres, submits the review ID to Modal, and returns 202 after Modal accepts it. A CPU function checks current state, posts a start comment when enabled, runs Wrev in Wasmtime against Inkling on B200, and edits the same comment with the result. A scheduled sweep repairs missed dispatches.</desc>
+<desc id="desc">GitHub sends a signed mwrev label event. A Python webhook verifies it, saves a deduplicated review row in Postgres, submits the review ID to Modal, and returns 202 after Modal accepts it. A CPU function checks current state, posts a start comment when enabled, runs Wrev in Wasmtime against Inkling on B200, and edits the same comment with the result. A scheduled sweep repairs missed dispatches.</desc>
 <defs>
 <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#385771"/></marker>
 <marker id="retry" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#9b530a"/></marker>
@@ -14,7 +14,7 @@ text{font-family:system-ui,-apple-system,Segoe UI,Arial,sans-serif;fill:#182c40}
 
 <rect x="40" y="163" width="518" height="82" rx="13" class="box gray"/>
 <text x="61" y="196" class="head">1 · GitHub</text>
-<text x="61" y="225" class="body">The <tspan class="mono">wrev</tspan> label triggers a signed webhook.</text>
+<text x="61" y="225" class="body">The <tspan class="mono">mwrev</tspan> label triggers a signed webhook.</text>
 <path d="M297 245V276" class="line"/>
 
 <rect x="40" y="278" width="518" height="153" rx="13" class="box blue"/>
