@@ -26,7 +26,7 @@ runtime = runtime.add_local_dir(ROOT / "wrev", f"{CODE}/wrev", copy=True,
                                 ignore=["target", "__pycache__"]).run_commands(
     "curl -fsSL --retry 3 https://github.com/bytecodealliance/wasmtime/releases/download/v51.0.0/wasmtime-v51.0.0-x86_64-linux.tar.xz | tar -xJ -C /opt",
     "curl -fsSL --retry 3 https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-24/wasi-sdk-24.0-x86_64-linux.tar.gz | tar -xz -C /opt",
-    "curl -fsSL --retry 3 https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init -o /tmp/wrev-rustup && chmod 700 /tmp/wrev-rustup && /tmp/wrev-rustup -y --no-modify-path --default-toolchain 1.100.0 --profile minimal --target wasm32-wasip2 && rm /tmp/wrev-rustup",
+    "curl -fsSL --retry 3 https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init -o /tmp/rustup-init && chmod 700 /tmp/rustup-init && /tmp/rustup-init -y --no-modify-path --default-toolchain 1.100.0 --profile minimal --target wasm32-wasip2 && rm /tmp/rustup-init",
     "cd /opt/mwrev/wrev && ~/.cargo/bin/cargo build --locked --release --bin wrev",
     "cd /opt/mwrev/wrev && CC_wasm32_wasip2=/opt/wasi-sdk-24.0-x86_64-linux/bin/clang WASI_SDK=/opt/wasi-sdk-24.0-x86_64-linux ~/.cargo/bin/cargo build --locked --release --target wasm32-wasip2 --features mwrev-host-stdio --bin wrev",
     "python3 /opt/mwrev/mwrev-runner/smoke_guest.py /opt/wasmtime-v51.0.0-x86_64-linux/wasmtime /opt/mwrev/wrev/target/wasm32-wasip2/release/wrev.wasm",
