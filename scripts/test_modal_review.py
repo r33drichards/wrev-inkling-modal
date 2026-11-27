@@ -32,6 +32,18 @@ class CommentLifecycle(unittest.TestCase):
         self.m.run_probe=SimpleNamespace(remote=Mock(return_value=result))
         self.m.github_json=Mock(side_effect=[{"id":12,"html_url":"start"},{"html_url":"finish"}])
 
+    def test_last_turn_requests_final_json_without_tools(self):
+        req={"instructions":"Review the PR."}
+        self.assertFalse(self.m.reserve_final_turn(req,18,True))
+        self.assertNotIn("tool_choice",req)
+        self.assertTrue(self.m.reserve_final_turn(req,19,True))
+        self.assertEqual(req["tool_choice"],"none")
+        self.assertEqual(req["text"]["format"]["type"],"json_schema")
+        with self.assertRaisesRegex(RuntimeError,"before reading"):
+            self.m.reserve_final_turn({"instructions":"Review."},19,False)
+        with self.assertRaisesRegex(RuntimeError,"after the final turn"):
+            self.m.reserve_final_turn(req,20,True)
+
     def test_no_comment_by_default(self):
         self.m.main("r33drichards/webhook",11)
         self.m.github_json.assert_not_called()

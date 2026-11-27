@@ -283,6 +283,34 @@ def prepare_evidence(d,target):
     print("Pinned and staged public PR evidence; no PR code executed.",flush=True)
     return data.getvalue()
 
+MAX_REVIEW_TURNS = 20
+
+def reserve_final_turn(request, completed_turns, read_diff):
+    if completed_turns >= MAX_REVIEW_TURNS:
+        raise RuntimeError("model attempted to continue after the final turn")
+    if completed_turns != MAX_REVIEW_TURNS - 1:
+        return False
+    if not read_diff:
+        raise RuntimeError("review exhausted its tool budget before reading the diff")
+    request["tool_choice"] = "none"
+    request["instructions"] += (
+        "\n\nThe tool budget is now exhausted. You have already read the diff. "
+        "Stop gathering evidence. Return the final JSON object now, using only the evidence "
+        "already in context. If there are no supported actionable findings, return {\"findings\":[]}. "
+        "Do not put the JSON in a Markdown fence."
+    )
+    item={
+        "type":"object",
+        "properties":{"file":{"type":"string"},"start_line":{"type":"integer"},
+                      "end_line":{"type":"integer"},"message":{"type":"string"}},
+        "required":["file","start_line","end_line","message"],
+        "additionalProperties":False,
+    }
+    request["text"]={"format":{"type":"json_schema","name":"wrev_findings","strict":True,
+        "schema":{"type":"object","properties":{"findings":{"type":"array","items":item}},
+                  "required":["findings"],"additionalProperties":False}}}
+    return True
+
 class LiveProxy(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         with self.server.step_lock:
@@ -292,7 +320,7 @@ class LiveProxy(http.server.BaseHTTPRequestHandler):
         sent=False
         try:
             assert self.path=="/v1/responses" and self.headers["Authorization"]=="Bearer fixture-only"
-            assert self.server.turns<20,"test permits at most 20 model turns"
+
             max_body=16*1024*1024
             if self.headers.get("Transfer-Encoding","").lower()=="chunked":
                 buf=bytearray()
@@ -316,6 +344,9 @@ class LiveProxy(http.server.BaseHTTPRequestHandler):
                     if "diff --git " in body:
                         self.server.read_diff=True
                 self.server.outputs.update(got)
+            final_turn=reserve_final_turn(req,self.server.turns,self.server.read_diff)
+            if final_turn:
+                print("Reserved final model turn: tools disabled; findings JSON schema requested.",flush=True)
             req["max_output_tokens"]=8192
             req["temperature"]=0
             started=time.monotonic()
@@ -334,6 +365,8 @@ class LiveProxy(http.server.BaseHTTPRequestHandler):
                 items=output(frame)
                 calls=[x for x in items if x.get("type")=="function_call"]
                 assert all(c.get("name")=="run_js" and c.get("call_id") for c in calls),"unexpected tool"
+                if final_turn:
+                    assert not calls, "model emitted tools on the final turn"
                 self.server.expected={c["call_id"] for c in calls}
                 self.server.turns+=1
                 usage=next((x["response"].get("usage") for x in frame if x.get("type")=="response.completed"),None)
