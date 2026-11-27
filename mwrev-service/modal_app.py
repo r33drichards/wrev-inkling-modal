@@ -91,7 +91,7 @@ def receiver():
                    allowed_account(), store.persist, lambda id: store.dispatch(id, spawn))
 
 @app.function(image=runtime, secrets=[database, allowlist, github, model],
-              cpu=0.125, memory=128, min_containers=0, max_containers=4, timeout=3600)
+              cpu=(0.125, 1.0), memory=(128, 256), min_containers=0, max_containers=4, timeout=3600)
 async def review(id):
     w = worker()
     state = await w.execute(id)
