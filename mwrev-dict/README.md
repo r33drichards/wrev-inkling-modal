@@ -24,6 +24,15 @@ It needs no production secrets, Postgres, GPU or GitHub app.
   the result stays pending until publication succeeds. After success, leave
   the detailed history on GitHub and keep a seven-day deduplication record.
   The Dict entry itself can expire after seven days without reads or writes.
+- The scheduled CPU repair function reads one Dict snapshot before contacting
+  the coordinator. If the snapshot has no unsettled jobs, the function skips
+  Dict repair without waking the writer. Postgres repair is unchanged in
+  bridge mode. A result with pending GitHub effects still counts as work.
+  A webhook racing an idle read persists and dispatches as usual, and the
+  next repair tick can recover a lost dispatch. Expired settled records are
+  also pruned on webhook persistence, so cleanup does not require an idle
+  writer wake. The periodic reads keep the shared Dict key alive; this is
+  distinct from expiring individual review tombstones. See the [TLA+ model](../docs/tla/README.md).
 - The whole record is rewritten on mutation. This intentionally favors atomic
   state transitions over scale for the prototype. A production follow-up
   should measure queue depth, record size, scan fairness and the receiver's

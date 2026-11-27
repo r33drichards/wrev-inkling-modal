@@ -142,25 +142,33 @@ async def review(id):
     print(json.dumps({"review_id":id, "state":state}), flush=True)
     # The only publisher is repair_tick, avoiding simultaneous writer processes.
 
+async def repair_backend(name, state, check_call=None):
+    from repair import repair
+
+    if check_call is None:
+        await state.recover_abandoned()
+    else:
+        await state.recover_abandoned(check_call)
+    dispatched = await repair(state, spawn)
+    published = await worker(state).publish()
+    if dispatched.redispatched or dispatched.unconfirmed or published:
+        print(json.dumps({"backend":name, "redispatched":dispatched.redispatched,
+                          "unconfirmed":dispatched.unconfirmed,
+                          "published":published}), flush=True)
+
+
 @app.function(image=runtime, secrets=[allowlist, github, model, *storage_secrets()],
               schedule=modal.Period(minutes=2), max_containers=1, timeout=480)
 async def repair_tick():
     setup()
-    from repair import repair
-    from modal_status import is_terminal
-    stores = []
     if BACKEND in {"postgres", "bridge"}:
-        stores.append(("postgres", postgres(), None))
+        await repair_backend("postgres", postgres())
     if BACKEND in {"dict", "bridge"}:
-        stores.append(("dict", dict_state(), is_terminal))
-    for name, state, status in stores:
-        if status is None:
-            await state.recover_abandoned()
-        else:
-            await state.recover_abandoned(status)
-        dispatched = await repair(state, spawn)
-        published = await worker(state).publish()
-        if dispatched.redispatched or dispatched.unconfirmed or published:
-            print(json.dumps({"backend":name, "redispatched":dispatched.redispatched,
-                              "unconfirmed":dispatched.unconfirmed,
-                              "published":published}), flush=True)
+        from dict_store import has_repair_work
+        from modal_status import is_terminal
+
+        data = modal.Dict.from_name("mwrev-review-state-v1", create_if_missing=False)
+        # A webhook racing an idle snapshot dispatches its own job. If it
+        # crashes before dispatch, a future tick sees the committed intent.
+        if await has_repair_work(data):
+            await repair_backend("dict", dict_state(), is_terminal)

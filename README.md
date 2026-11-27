@@ -46,3 +46,5 @@ The vendored `wrev/` tree derives from
 [r33drichards/wrev at d871373](https://github.com/r33drichards/wrev/tree/d8713736595c2067796c72d00b91db63db28fab4)
 with integration changes for Wasmtime. The original Go webhook service is not
 part of this deployment and remains in its separate repository.
+
+The [TLA+ model](docs/tla/README.md) covers dispatch, retries, publication, and the idle repair guard.
