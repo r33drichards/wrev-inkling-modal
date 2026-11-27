@@ -25,7 +25,7 @@ fetching evidence or writing to GitHub.
 ## Runtime configuration
 
 - CPU reviews: zero warm containers; up to four concurrent review workers,
-  each requesting 0.25 CPU and 256 MiB. These are requests, not hard ceilings.
+  each requesting 0.125 CPU and 128 MiB, with hard limits of 1 CPU and 256 MiB.
   Each attempt gets up to 60 minutes total, including up to 300 seconds for
   evidence prep. Its 65-minute database lease outlasts the function timeout.
 - Model: one B200 (TP1), zero warm containers, 60-second idle window; up to four
