@@ -40,3 +40,5 @@ jobs:
         run: |
           cargo +1.100.0 build --locked --target wasm32-wasip2 --features mwrev-host-stdio --bin wrev
           wasmtime run target/wasm32-wasip2/debug/wrev.wasm --help
+      - name: Exercise mounted guest with mock model and real QuickJS
+        run: python3 mwrev-runner/smoke_guest.py "$(command -v wasmtime)" wrev/target/wasm32-wasip2/debug/wrev.wasm
