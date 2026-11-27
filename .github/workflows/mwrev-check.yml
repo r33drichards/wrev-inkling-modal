@@ -40,9 +40,9 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/mwrev-tests"
           source "$RUNNER_TEMP/mwrev-tests/bin/activate"
-          export PYTHONPATH="$PWD/mwrev-service"
+          export PYTHONPATH="$PWD/mwrev-service:$PWD/mwrev-candidate"
           python3 -m pip install 'psycopg[binary]==3.2.10'
-          for suite in mwrev-candidate mwrev-gateway mwrev-runner mwrev-inference mwrev-publisher mwrev-service; do
+          for suite in mwrev-candidate mwrev-dict mwrev-gateway mwrev-runner mwrev-inference mwrev-publisher mwrev-service; do
             python3 -m unittest discover -s "$suite" -v || exit 1
           done
       - name: Install CPU build tools

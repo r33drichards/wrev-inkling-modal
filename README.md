@@ -9,7 +9,7 @@ terminal failure. It leaves the label in place during retries.
 
 ```text
 GitHub signed pull_request event
-  -> Modal ASGI receiver -> Neon Postgres -> Modal CPU review function
+  -> Modal ASGI receiver -> Modal Dict state coordinator -> Modal CPU review function
   -> pinned base/head evidence -> Wrev under Wasmtime
   -> host model transport -> private Inkling vLLM on one Modal B200
   -> durable result -> publisher updates start comment + clears trigger
@@ -38,7 +38,7 @@ fetching evidence or writing to GitHub.
   scoped to each PR's base repository.
 - QuickJS memory and output settings remain 100 MiB each.
 
-See [service setup](mwrev-service/README.md), [inference](mwrev-inference/README.md),
+See [Dict storage and cutover](mwrev-dict/README.md), [service setup](mwrev-service/README.md), [inference](mwrev-inference/README.md),
 and the [architecture diagram](wrev-modal-spawn.svg). The
 [original rollout plan](plan.md) predates the account-wide scope and updated limits.
 

@@ -11,7 +11,11 @@ import modal
 ROOT = Path(__file__).resolve().parents[1]
 CODE = "/opt/mwrev"
 PORTABLE = ("mwrev-candidate", "mwrev-gateway", "mwrev-runner",
-            "mwrev-publisher", "mwrev-service")
+            "mwrev-publisher", "mwrev-service", "mwrev-dict")
+BACKEND = os.environ.get("MWREV_DEPLOY_BACKEND", "dict")
+if BACKEND not in {"postgres", "bridge", "dict"}:
+    raise ValueError("unknown Wrev state backend")
+backend_config = modal.Secret.from_dict({"MWREV_DEPLOY_BACKEND": BACKEND})
 app = modal.App("mwrev")
 base = modal.Image.debian_slim(python_version="3.12").pip_install(
     "psycopg[binary]==3.2.10", "PyJWT[crypto]==2.10.1", "fastapi",
@@ -58,10 +62,32 @@ async def connect():
 async def spawn(id):
     return (await review.spawn.aio(id)).object_id
 
-def worker():
+def postgres():
+    setup()
+    from store import Store
+    return Store(connect)
+
+def dict_state():
+    setup()
+    from dict_store import DictStore
+    coordinator = modal.Function.from_name("mwrev-state", "coordinate")
+    return DictStore(coordinator.remote.aio)
+
+def ingress_state():
+    if BACKEND == "postgres":
+        return postgres()
+    current = dict_state()
+    if BACKEND == "dict":
+        return current
+    from bridge import BridgeIngress
+    return BridgeIngress(postgres(), current)
+
+def storage_secrets():
+    return [backend_config] + ([database] if BACKEND != "dict" else [])
+
+def worker(state):
     setup()
     from service import Worker
-    from store import Store
     cfg = SimpleNamespace(
         allowed=allowed_account(), app_id=int(os.environ["MWREV_GITHUB_APP_ID"]),
         private_key=os.environ["MWREV_GITHUB_APP_PRIVATE_KEY"], comments=True,
@@ -72,41 +98,69 @@ def worker():
         model_auth={"Modal-Key":os.environ["MWREV_MODAL_PROXY_KEY"],
                     "Modal-Secret":os.environ["MWREV_MODAL_PROXY_SECRET"]},
     )
-    return Worker(Store(connect), cfg)
+    return Worker(state, cfg)
 
-@app.function(image=base, secrets=[database], timeout=60)
-async def migrate():
-    async with await connect() as c:
-        await c.execute(Path(f"{CODE}/mwrev-candidate/schema.sql").read_text())
+if BACKEND != "dict":
+    @app.function(image=base, secrets=[backend_config, database], timeout=60)
+    async def migrate():
+        async with await connect() as c:
+            await c.execute(Path(f"{CODE}/mwrev-candidate/schema.sql").read_text())
 
-@app.function(image=base, secrets=[database, allowlist, webhook],
+if BACKEND == "bridge":
+    @app.function(image=base, secrets=[backend_config, database], timeout=60)
+    async def seed_legacy():
+        manifest = await postgres().settled_manifest()
+        state = dict_state()
+        added = await state.call("seed_legacy", manifest)
+        return {"legacy_reviews":len(manifest), "inserted":added, **await state.call("status")}
+
+
+@app.function(image=base, secrets=[allowlist, webhook, *storage_secrets()],
               cpu=0.25, memory=256, min_containers=0, max_containers=2, timeout=10)
 @modal.asgi_app()
 def receiver():
     setup()
     from ingress import app as ingress
-    from store import Store
-    store = Store(connect)
+    store = ingress_state()
     return ingress(os.environ["MWREV_WEBHOOK_SECRET"].encode(),
                    allowed_account(), store.persist, lambda id: store.dispatch(id, spawn))
 
-@app.function(image=runtime, secrets=[database, allowlist, github, model],
+@app.function(image=runtime, secrets=[allowlist, github, model, *storage_secrets()],
               cpu=(0.125, 1.0), memory=(128, 256), min_containers=0, max_containers=4, timeout=3600)
 async def review(id):
-    w = worker()
+    if type(id) is int:
+        if BACKEND == "dict":
+            # A duplicate of an already-drained legacy input may still arrive.
+            return "legacy_drained"
+        state_store = postgres()
+    else:
+        if BACKEND == "postgres":
+            return "unsupported_dict_job"
+        state_store = dict_state()
+    w = worker(state_store)
     state = await w.execute(id)
     print(json.dumps({"review_id":id, "state":state}), flush=True)
     # The only publisher is repair_tick, avoiding simultaneous writer processes.
 
-@app.function(image=runtime, secrets=[database, allowlist, github, model],
+@app.function(image=runtime, secrets=[allowlist, github, model, *storage_secrets()],
               schedule=modal.Period(minutes=2), max_containers=1, timeout=480)
 async def repair_tick():
-    w = worker()
+    setup()
     from repair import repair
-    await w.store.recover_abandoned()
-    dispatched = await repair(w.store, spawn)
-    published = await w.publish()
-    if dispatched.redispatched or dispatched.unconfirmed or published:
-        print(json.dumps({"redispatched":dispatched.redispatched,
-                          "unconfirmed":dispatched.unconfirmed,
-                          "published":published}), flush=True)
+    from modal_status import is_terminal
+    stores = []
+    if BACKEND in {"postgres", "bridge"}:
+        stores.append(("postgres", postgres(), None))
+    if BACKEND in {"dict", "bridge"}:
+        stores.append(("dict", dict_state(), is_terminal))
+    for name, state, status in stores:
+        if status is None:
+            await state.recover_abandoned()
+        else:
+            await state.recover_abandoned(status)
+        dispatched = await repair(state, spawn)
+        published = await worker(state).publish()
+        if dispatched.redispatched or dispatched.unconfirmed or published:
+            print(json.dumps({"backend":name, "redispatched":dispatched.redispatched,
+                              "unconfirmed":dispatched.unconfirmed,
+                              "published":published}), flush=True)
