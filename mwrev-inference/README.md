@@ -1,17 +1,22 @@
-# Inkling inference candidate
+# Inkling inference on Modal
 
-`inkling.py` describes a separate Modal B200 web function. It uses the image
-digest, model revision, parser, and DSpark settings exercised by the earlier
-smoke test. Modal proxy authentication is required, the service starts with
-zero containers, and at most one is allocated. The configured cache is a
-private, environment-scoped volume and is not created during module import.
+The private `mwrev-inkling` web function serves the pinned Inkling 2 Mini
+checkpoint on one L40S. Wrev uses the streaming Responses API and the Inkling
+reasoning and tool parsers. The checkpoint revision and model weights are
+unchanged. The vLLM image contains the upstream
+[SM89/Ada backend](https://github.com/vllm-project/vllm/pull/69165). The
+L40S uses 16-bit activations and KV cache with the mixed NVFP4/MXFP8 checkpoint,
+rather than native Blackwell FP4 math.
 
-This is not the public GitHub webhook. The eventual trusted CPU gateway must
-hold the proxy credentials, enforce authenticated request/response and
-concurrency limits, and preserve the Wrev streaming Responses contract. The
-guest must never receive the proxy credentials. No real Modal staging or
-GPU verification has been performed on this entrypoint. Verify unauthenticated
-requests are denied, cache reuse works, and the cold start, streaming,
-cancellation and timeout behavior meet the staging gates before release.
+The context limit is 131,072 tokens **including output**. The app can accept
+four concurrent HTTP inputs; requests share a finite KV cache, so four
+maximum-length requests need not fit simultaneously. It scales to zero with
+a 60-second idle window. Modal proxy authentication stays required, and the
+existing environment-scoped weights volume is reused. The guest never receives
+the proxy credentials.
 
-Run the CPU-only configuration check: `python -m unittest discover -s mwrev-inference -v`.
+Local release checks do not need a GPU:
+
+```sh
+python -m unittest discover -s mwrev-inference -v
+```
