@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="965" viewBox="0 0 960 965" role="img" aria-labelledby="title desc">
+<title id="title">Wrev on Modal: one function call per review</title>
+<desc id="desc">GitHub sends a signed label event. A Python webhook verifies it, saves a deduplicated review row in Postgres, submits the review ID to Modal, and returns 202 after Modal accepts it. A CPU function checks current state, posts a start comment when enabled, runs Wrev in Wasmtime against Inkling on B200, and edits the same comment with the result. A scheduled sweep repairs missed dispatches.</desc>
+<defs>
+<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#385771"/></marker>
+<marker id="retry" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#9b530a"/></marker>
+<style>
+text{font-family:system-ui,-apple-system,Segoe UI,Arial,sans-serif;fill:#182c40}.title{font-size:36px;font-weight:760;letter-spacing:-.6px}.sub{font-size:19px;fill:#455e76}.tag{font-size:13px;font-weight:750;letter-spacing:1.55px}.head{font-size:23px;font-weight:740}.body{font-size:19px}.small{font-size:17px;fill:#455e76}.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:17px}.box{stroke-width:1.35}.gray{fill:#eef2f6;stroke:#a4b4c4}.blue{fill:#e9f2ff;stroke:#8fb5e9}.green{fill:#e8f5ef;stroke:#7cb29e}.purple{fill:#f2ebfc;stroke:#b49cdd}.amber{fill:#fff3df;stroke:#d8ab65}.line{fill:none;stroke:#385771;stroke-width:2.3;marker-end:url(#arr)}.two{marker-start:url(#arr)}.back{fill:none;stroke:#9b530a;stroke-width:2.1;stroke-dasharray:7 5;marker-end:url(#retry)}
+</style></defs>
+<rect width="960" height="965" fill="#f7f9fc"/>
+<text x="40" y="44" class="tag">WREV ON MODAL · PROPOSED STAGING DESIGN</text>
+<text x="40" y="92" class="title">One Modal function call per review</text>
+<text x="40" y="126" class="sub">Modal schedules the work. Postgres remembers the review.</text>
+
+<rect x="40" y="163" width="518" height="82" rx="13" class="box gray"/>
+<text x="61" y="196" class="head">1 · GitHub</text>
+<text x="61" y="225" class="body">The <tspan class="mono">wrev</tspan> label triggers a signed webhook.</text>
+<path d="M297 245V276" class="line"/>
+
+<rect x="40" y="278" width="518" height="153" rx="13" class="box blue"/>
+<text x="61" y="312" class="head">2 · Python webhook receiver</text>
+<text x="61" y="343" class="body">Verify signature and allowed repository.</text>
+<text x="61" y="368" class="body">Save the review before dispatch.</text>
+<text x="61" y="395" class="body">Submit <tspan class="mono">review.spawn(review_id)</tspan>.</text>
+<text x="61" y="418" class="small">Return 202 once Modal accepts the invocation.</text>
+
+<rect x="645" y="278" width="275" height="153" rx="13" class="box green"/>
+<text x="665" y="312" class="head">Postgres</text>
+<text x="665" y="343" class="body">Delivery and review IDs</text>
+<text x="665" y="368" class="body">Pinned head and status</text>
+<text x="665" y="393" class="body">Result and comment ID</text>
+<text x="665" y="416" class="small">No queue worker in Postgres.</text>
+<path d="M558 349H642" class="line"/><text x="600" y="335" class="tag" text-anchor="middle">SAVE</text>
+
+<rect x="40" y="475" width="518" height="86" rx="13" class="box blue"/>
+<text x="61" y="510" class="head">3 · Modal schedules the invocation</text>
+<text x="61" y="540" class="body">Starts an on-demand CPU function for the review ID.</text>
+<path d="M297 431V473" class="line"/>
+
+<rect x="645" y="475" width="275" height="109" rx="13" class="box amber"/>
+<text x="665" y="507" class="head">Scheduled sweep</text>
+<text x="665" y="534" class="small">Finds incomplete dispatches</text>
+<text x="665" y="558" class="small">and resubmits the review ID.</text>
+<path d="M782 475V435" class="back"/><path d="M645 524H562" class="back"/>
+
+<rect x="40" y="606" width="518" height="199" rx="13" class="box blue"/>
+<text x="61" y="641" class="head">4 · CPU function runs Wrev in Wasmtime</text>
+<text x="61" y="672" class="body">Guard against duplicate runs and stale heads.</text>
+<text x="61" y="699" class="body">Check the label; post “Wrev review started”*.</text>
+<text x="61" y="726" class="body">Review pinned PR evidence using Inkling.</text>
+<text x="61" y="753" class="body">Save the validated result to Postgres.</text>
+<text x="61" y="780" class="body">Recheck the head and label; edit the same comment*.</text>
+<path d="M297 561V604" class="line"/>
+
+<rect x="645" y="652" width="275" height="102" rx="13" class="box purple"/>
+<text x="665" y="686" class="head">Inkling on B200</text>
+<text x="665" y="716" class="body">Authenticated inference</text>
+<text x="665" y="740" class="small">Separate Modal service</text>
+<path d="M561 708H642" class="line two"/>
+
+<rect x="40" y="837" width="880" height="75" rx="12" fill="#fff" stroke="#becbd6"/>
+<text x="60" y="866" class="head">The failure case to prove in staging</text>
+<text x="60" y="893" class="body">Kill the receiver after save, before spawn. Recover without a duplicate comment.</text>
+<text x="40" y="944" class="small">* When comments are enabled. The start comment goes out before the first model call.</text>
+</svg>
