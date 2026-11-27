@@ -134,3 +134,71 @@ def model_call(origin, credentials, body):
         return completed_output(chunks)
     finally:
         chunks.close()
+
+MODEL_STARTUP_SECONDS = 900
+
+def wait_ready(origin, credentials):
+    """Wait on the known Modal endpoint before starting a model turn."""
+    host = upstream_host(origin)
+    route = "/health"
+    deadline = time.monotonic() + MODEL_STARTUP_SECONDS
+    headers = {key: credentials[key] for key in ("Modal-Key", "Modal-Secret")}
+    while time.monotonic() < deadline:
+        left = deadline - time.monotonic()
+        conn = HTTPSConnection(host, timeout=min(155, max(1, left)))
+        try:
+            conn.request("GET", route, headers=headers)
+            response = conn.getresponse()
+            if response.status == 200:
+                return
+            if response.status == 303:
+                dest = urlsplit(response.getheader("Location", ""))
+                # Modal's long-request result URI; no arbitrary redirect or
+                # credential forwarding to another origin/path.
+                if ((dest.scheme, dest.netloc) not in {("", ""), ("https", host)}
+                        or dest.path != "/health" or not dest.query or dest.fragment
+                        or len(dest.query) > 2048):
+                    raise GatewayError("unexpected readiness continuation")
+                route = "/health?" + dest.query
+            elif response.status not in (408, 429, 502, 503, 504):
+                raise GatewayError(f"model readiness returned HTTP {response.status}")
+        except (OSError, HTTPException):
+            pass
+        finally:
+            conn.close()
+        time.sleep(min(2, max(0, deadline-time.monotonic())))
+    raise GatewayError("model did not become ready")
+
+class ReviewModel:
+    """Bound per-review model calls and reserve a final turn."""
+    def __init__(self, origin, credentials, total_turns=20):
+        self.origin = origin
+        self.credentials = credentials
+        self.total_turns = total_turns
+        self.turn = 0
+
+    def __call__(self, body, _remaining_seconds):
+        self.turn += 1
+        if self.turn == self.total_turns:
+            messages = body.get("input", [])
+            read_calls = {v.get("call_id") for v in messages
+                          if v.get("type") == "function_call" and v.get("name") == "run_js"
+                          and "pr/diff.patch" in v.get("arguments", "")}
+            if not any(v.get("type") == "function_call_output" and v.get("call_id") in read_calls
+                       and v.get("output") and "isError" not in str(v["output"])
+                       for v in messages):
+                raise GatewayError("tool budget exhausted without confirmed diff read")
+            body = dict(body)
+            body["tool_choice"] = "none"
+            body["instructions"] += (
+                "\n\nStop gathering evidence. Return the final findings JSON now using only "
+                "evidence already read; return an empty findings array if there are no supported findings."
+            )
+            fields = {"file":{"type":"string"}, "start_line":{"type":"integer"},
+                      "end_line":{"type":"integer"}, "message":{"type":"string"}}
+            body["text"] = {"format":{"type":"json_schema","name":"wrev_findings","strict":True,
+                "schema":{"type":"object","properties":{"findings":{"type":"array","items":{
+                    "type":"object","properties":fields,"required":list(fields),
+                    "additionalProperties":False}}},
+                    "required":["findings"],"additionalProperties":False}}}
+        return model_call(self.origin, self.credentials, body)

@@ -71,9 +71,9 @@ class Store:
         token = uuid.uuid4()
         async with await self.connect() as conn:
             r = await conn.execute("""
-            UPDATE mwrev_review SET attempt_token = %s,
+            UPDATE mwrev_review SET attempt_token = %s, model_attempts = model_attempts + 1,
             expires_at = now() + interval '30 minutes'
-            WHERE id = %s AND result IS NULL
+            WHERE id = %s AND result IS NULL AND model_attempts < 2
             AND (attempt_token IS NULL OR expires_at <= now())
             RETURNING installation, repository, pr, head, base
             """, (token, review_id))
@@ -88,3 +88,66 @@ class Store:
             AND expires_at > now() AND result IS NULL RETURNING id
             """, (Jsonb(result), review_id, token))
             return await r.fetchone() is not None
+
+    async def reserve_start_comment(self, review_id, token):
+        async with await self.connect() as conn:
+            r = await conn.execute("""
+            UPDATE mwrev_review SET publishing_after = now() + interval '60 seconds'
+            WHERE id=%s AND attempt_token=%s AND expires_at>now()
+            AND result IS NULL AND publishing_after<=now() RETURNING comment_id
+            """, (review_id, token))
+            return await r.fetchone()
+
+    async def remember_comment(self, review_id, token, comment_id):
+        async with await self.connect() as conn:
+            r = await conn.execute("""
+            UPDATE mwrev_review SET comment_id=%s, publishing_after=now()
+            WHERE id=%s AND attempt_token=%s AND expires_at>now()
+            AND result IS NULL RETURNING id
+            """, (comment_id, review_id, token))
+            return await r.fetchone() is not None
+
+    async def publications(self):
+        async with await self.connect() as conn:
+            r = await conn.execute("""
+            SELECT id, installation, repository, pr, head, comment_id, result
+            FROM mwrev_review WHERE published_at IS NULL AND comment_id IS NOT NULL
+            AND result IS NOT NULL AND publishing_after<=now() ORDER BY id LIMIT 50
+            """)
+            return await r.fetchall()
+
+    async def mark_published(self, review_id, comment_id):
+        async with await self.connect() as conn:
+            await conn.execute("""
+            UPDATE mwrev_review SET published_at=now() WHERE id=%s AND comment_id=%s
+            AND result IS NOT NULL
+            """, (review_id, comment_id))
+
+    async def release_attempt(self, review_id, token):
+        async with await self.connect() as conn:
+            await conn.execute("""
+            UPDATE mwrev_review SET expires_at=now()+interval '60 seconds'
+            WHERE id=%s AND attempt_token=%s AND expires_at>now() AND result IS NULL
+            """, (review_id, token))
+
+    async def recover_abandoned(self):
+        """Recover a confirmed call that never claimed, or a truly expired runner."""
+        from psycopg.types.json import Jsonb
+        async with await self.connect() as conn:
+            await conn.execute("""
+            UPDATE mwrev_review SET result=%s
+            WHERE result IS NULL AND
+              ((model_attempts>=2 AND expires_at<=now()) OR
+               (dispatch_attempts>=8 AND ((modal_call_id IS NULL AND dispatch_after<=now())
+                OR (modal_call_id IS NOT NULL AND ((attempt_token IS NULL
+                AND dispatch_after<=now()-interval '14 minutes') OR expires_at<=now())))))
+            """, (Jsonb({"state":"failed"}),))
+            await conn.execute("""
+            UPDATE mwrev_review SET modal_call_id=NULL, dispatch_after=now()
+            WHERE id IN (
+                SELECT id FROM mwrev_review WHERE modal_call_id IS NOT NULL AND result IS NULL
+                AND dispatch_attempts<8 AND model_attempts<2 AND
+                ((attempt_token IS NULL AND dispatch_after<=now()-interval '14 minutes') OR
+                 expires_at<=now()) ORDER BY id LIMIT 50
+            )
+            """)

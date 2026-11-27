@@ -26,3 +26,8 @@ CREATE TABLE IF NOT EXISTS mwrev_delivery (
 CREATE INDEX IF NOT EXISTS mwrev_pending
 ON mwrev_review (dispatch_after, id)
 WHERE modal_call_id IS NULL AND result IS NULL;
+
+ALTER TABLE mwrev_review ADD COLUMN IF NOT EXISTS comment_id bigint;
+ALTER TABLE mwrev_review ADD COLUMN IF NOT EXISTS publishing_after timestamptz NOT NULL DEFAULT now();
+ALTER TABLE mwrev_review ADD COLUMN IF NOT EXISTS published_at timestamptz;
+ALTER TABLE mwrev_review ADD COLUMN IF NOT EXISTS model_attempts integer NOT NULL DEFAULT 0;
