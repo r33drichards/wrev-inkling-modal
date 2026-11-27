@@ -1,13 +1,15 @@
 import json
 import unittest
+import time
 from unittest.mock import patch, MagicMock
 import gateway
 
 class GatewayTest(unittest.TestCase):
-    def test_rewrites_model_and_bounds_output(self):
+    def test_rewrites_model_and_delegates_output_budget(self):
         value = json.loads(gateway.prepare(b'{"input":[],"model":"other","max_output_tokens":99999,"include":["x"]}'))
         self.assertEqual(value["model"], gateway.MODEL)
-        self.assertEqual(value["max_output_tokens"], gateway.MAX_OUTPUT_TOKENS)
+        self.assertEqual(value["max_output_tokens"], 99999)
+        self.assertNotIn("max_output_tokens", json.loads(gateway.prepare(b'{"input":[]}')))
         self.assertTrue(value["stream"])
         self.assertFalse(value["store"])
         self.assertNotIn("include", value)
@@ -28,7 +30,7 @@ class GatewayTest(unittest.TestCase):
         with patch.object(gateway, "HTTPSConnection", return_value=conn):
             self.assertEqual(list(gateway.stream("https://app.modal.run",
                 {"Modal-Key":"key", "Modal-Secret":"secret", "Authorization":"untrusted"},
-                b'{"input":[]}')), [b"data: event\n\n"])
+                b'{"input":[]}', deadline=time.monotonic() + 3600)), [b"data: event\n\n"])
         self.assertEqual(conn.request.call_args.args, ("POST", "/v1/responses"))
         self.assertNotIn("Authorization", conn.request.call_args.kwargs["headers"])
         conn.close.assert_called_once()
@@ -40,19 +42,23 @@ class GatewayTest(unittest.TestCase):
         with patch.object(gateway, "HTTPSConnection", return_value=conn):
             with self.assertRaisesRegex(gateway.GatewayError, "HTTP 307"):
                 list(gateway.stream("https://app.modal.run",
-                    {"Modal-Key":"key","Modal-Secret":"secret"}, b'{"input":[]}'))
+                    {"Modal-Key":"key","Modal-Secret":"secret"}, b'{"input":[]}', deadline=time.monotonic() + 3600))
         response.read1.assert_not_called()
 
-    def test_oversized_response_fails_closed(self):
+    def test_transfer_has_no_independent_size_or_time_cap(self):
         conn = MagicMock()
         response = conn.getresponse.return_value
         response.status = 200
         response.getheader.return_value = "text/event-stream"
-        response.read1.return_value = b"abcd"
-        with patch.object(gateway, "HTTPSConnection", return_value=conn), patch.object(gateway, "MAX_RESPONSE_BYTES", 3):
-            with self.assertRaisesRegex(gateway.GatewayError, "byte limit"):
-                list(gateway.stream("https://app.modal.run",
-                    {"Modal-Key":"key","Modal-Secret":"secret"}, b'{"input":[]}'))
+        data = b"x" * 65536
+        response.read1.side_effect = [data] * 129 + [b""]
+        payload = json.dumps({"input":["x" * (16 * 1024 * 1024 + 1)]}).encode()
+        with patch.object(gateway, "HTTPSConnection", return_value=conn) as connect:
+            observed = sum(map(len, gateway.stream("https://app.modal.run",
+                {"Modal-Key":"key","Modal-Secret":"secret"}, payload, deadline=time.monotonic() + 550)))
+        self.assertGreater(observed, 8 * 1024 * 1024)
+        self.assertGreater(connect.call_args.kwargs["timeout"], 500)
+        self.assertGreater(len(conn.request.call_args.kwargs["body"]), 16 * 1024 * 1024)
 
     def test_sse_chunk_boundaries_and_incomplete(self):
         chunks = iter([b'data: {"type":"response.com', b'pleted","response":{"output":[]}}\r\n\r\n'])

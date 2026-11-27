@@ -21,6 +21,7 @@ class InferenceConfigTest(unittest.TestCase):
                 types.SimpleNamespace(entrypoint=lambda x: "pinned-image")),
             App=lambda name: types.SimpleNamespace(function=decorator("function")),
             web_server=decorator("server"),
+            concurrent=decorator("concurrent"),
         )
         spec = importlib.util.spec_from_file_location(
             "inkling", Path(__file__).with_name("inkling.py"))
@@ -32,6 +33,7 @@ class InferenceConfigTest(unittest.TestCase):
         self.assertEqual((cfg["gpu"], cfg["min_containers"], cfg["max_containers"]), ("B200", 0, 1))
         self.assertTrue(recorded["server"][1]["requires_proxy_auth"])
         self.assertEqual(cfg["startup_timeout"], 900)
+        self.assertEqual(recorded["concurrent"][1]["max_inputs"], 4)
         self.assertFalse(recorded["volume"][1]["create_if_missing"])
         cmd = candidate.server_command()
         self.assertNotIn("--max-model-len", cmd)

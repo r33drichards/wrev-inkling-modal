@@ -1,6 +1,8 @@
 """GitHub review status formatting and idempotent comment reconciliation."""
 import re
 
+from github_app import trigger_labels
+
 STATUS = {
     "completed": "Wrev review completed",
     "failed": "Wrev review failed",
@@ -52,8 +54,7 @@ def finish(api, *, review_id, head, app_id, comment_id, outcome, findings_count=
         return outcome  # Publication succeeded on an earlier attempt.
     if outcome == "completed":
         pr = api.get_pull()
-        labels = {label["name"] for label in pr.get("labels", [])}
-        if pr.get("state") != "open" or "mwrev" not in labels:
+        if pr.get("state") != "open" or not trigger_labels(pr):
             outcome = "cancelled"
         elif pr.get("head", {}).get("sha") != head:
             outcome = "superseded"

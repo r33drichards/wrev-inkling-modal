@@ -1,5 +1,6 @@
 """Host-only scoped GitHub App authentication and API transport."""
 import json
+from dataclasses import dataclass
 from http.client import HTTPSConnection, HTTPException
 import re
 import time
@@ -9,6 +10,40 @@ MAX_BYTES = 4 * 1024 * 1024
 TIMEOUT = 12
 MAX_COMMENT_PAGES = 20
 SLUG = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+
+LABELS = frozenset({"mwrev", "mrev"})
+
+def trigger_labels(pr):
+    return LABELS.intersection(label["name"] for label in pr.get("labels", []))
+
+@dataclass(frozen=True)
+class AccountScope:
+    installation: int
+    owner: str
+
+    def __post_init__(self):
+        positive(self.installation)
+        if not re.fullmatch(r"[A-Za-z0-9-]+", self.owner):
+            raise ValueError("invalid GitHub account")
+
+    def repository_name(self, repository, data):
+        """Accept only an exact repository ID and configured base-repo owner."""
+        positive(repository)
+        if positive(data["id"]) != repository:
+            raise ValueError("unexpected GitHub repository")
+        slug = data["full_name"]
+        if (not SLUG.fullmatch(slug) or any(part in (".", "..") for part in slug.split("/"))
+                or slug.split("/")[0].casefold() != self.owner.casefold()
+                or data["owner"]["login"].casefold() != self.owner.casefold()):
+            raise ValueError("repository is outside the configured GitHub account")
+        return slug
+
+    def accepts(self, installation, repository, data):
+        try:
+            return (positive(installation) == self.installation
+                    and bool(self.repository_name(repository, data)))
+        except (ValueError, KeyError, TypeError, AttributeError):
+            return False
 
 class GitHubError(RuntimeError):
     pass
@@ -95,5 +130,7 @@ class Pull:
                             self.token, {"body": body})
 
 
-    def clear_trigger(self):
-        return self.request("DELETE", f"{self.root}/issues/{self.pr}/labels/mwrev", self.token)
+    def clear_trigger(self, label):
+        if label not in LABELS:
+            raise ValueError("not a configured review label")
+        return self.request("DELETE", f"{self.root}/issues/{self.pr}/labels/{label}", self.token)

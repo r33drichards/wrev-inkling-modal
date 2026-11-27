@@ -28,3 +28,21 @@ print(json.dumps({'type':'review.result','result':{'pr':{'head':'expected','pr_n
     def test_unexpected_frame_is_rejected(self):
         with self.assertRaisesRegex(wasm_runner.ReviewError, "unknown guest"):
             wasm_runner.run([sys.executable, "-c", "print('{}')"], print, {})
+
+
+    def test_more_than_twenty_turns_and_old_frame_sizes(self):
+        command = [sys.executable, "-c", """
+import json, sys
+for i in range(22):
+    data = "x" * (18 * 1024 * 1024) if i == 21 else str(i)
+    print(json.dumps({"type":"model.request","body":{"input":[data]}}), flush=True)
+    reply = json.loads(sys.stdin.readline())
+    assert reply["output"] == (["y" * (9 * 1024 * 1024)] if i == 21 else [])
+print(json.dumps({"type":"review.result","result":{"pr":{},"findings":[]}}), flush=True)
+"""]
+        seen = []
+        def model(body, remaining):
+            seen.append(len(body["input"][0]))
+            return ["y" * (9 * 1024 * 1024)] if len(seen) == 22 else []
+        self.assertEqual(wasm_runner.run(command, model, {})["findings"], [])
+        self.assertEqual((len(seen), seen[-1]), (22, 18 * 1024 * 1024))

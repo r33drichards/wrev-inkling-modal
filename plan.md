@@ -1,5 +1,7 @@
 # Wrev on Modal: production plan
 
+> Historical rollout plan. See [README.md](README.md) for current scope and runtime configuration.
+
 **Status: proposed.** This replaces the Go queue proposal in [PR #2](https://github.com/r33drichards/wrev-inkling-modal/pull/2). [PR #1](https://github.com/r33drichards/wrev-inkling-modal/pull/1) is a smoke test, not the service or a merge prerequisite. No deployment, GitHub App install, webhook change, or traffic cutover is part of this PR.
 
 ![Wrev on Modal: Python webhook saves review state and submits a Modal invocation](wrev-modal-spawn.svg)

@@ -6,10 +6,7 @@ import subprocess
 import time
 from pathlib import Path
 
-MAX_FRAME_BYTES = 17 * 1024 * 1024
-MAX_MODEL_REPLY_BYTES = 8 * 1024 * 1024
-MAX_MODEL_TURNS = 20
-REVIEW_TIMEOUT_SECONDS = 1500
+REVIEW_TIMEOUT_SECONDS = 3600
 
 class ReviewError(RuntimeError):
     pass
@@ -19,7 +16,6 @@ def wasi_arguments(wasmtime: Path, component: Path, snapshot: Path, request_dir:
             "--dir", f"{request_dir}::/input",
             "--env", "WREV_MODEL_TRANSPORT=host-stdio",
             "--env", "OPENAI_MODEL=thinkingmachines/Inkling-2-Mini",
-            "--env", "WREV_MODEL_TIMEOUT_SECS=180",
             "--env", "WREV_SCRIPT_MEMORY_BYTES=104857600",
             "--env", "WREV_SCRIPT_OUTPUT_BYTES=104857600",
             str(component), "review-snapshot", "/input/request.json", "/work"]
@@ -34,13 +30,15 @@ class Frames:
     def __init__(self, stream):
         self.fd = stream.fileno()
         self.pending = bytearray()
+        self.scanned = 0
 
     def read(self, deadline):
         while True:
-            end = self.pending.find(b"\n")
+            end = self.pending.find(b"\n", self.scanned)
             if end >= 0:
                 raw = bytes(self.pending[:end])
                 del self.pending[:end + 1]
+                self.scanned = 0
                 try:
                     value = json.loads(raw)
                 except (ValueError, RecursionError) as exc:
@@ -48,19 +46,16 @@ class Frames:
                 if not isinstance(value, dict):
                     raise ReviewError("invalid guest response type")
                 return value
-            if len(self.pending) >= MAX_FRAME_BYTES:
-                raise ReviewError("guest frame too large")
+            self.scanned = len(self.pending)
             if not select.select([self.fd], [], [], remaining(deadline))[0]:
                 raise ReviewError("review timed out")
-            chunk = os.read(self.fd, min(65536, MAX_FRAME_BYTES - len(self.pending)))
+            chunk = os.read(self.fd, 65536)
             if not chunk:
                 raise ReviewError("guest exited without a complete result")
             self.pending.extend(chunk)
 
 def send(stream, frame, deadline):
     data = json.dumps(frame, ensure_ascii=True, allow_nan=False).encode() + b"\n"
-    if len(data) > MAX_MODEL_REPLY_BYTES:
-        raise ReviewError("model output frame too large")
     fd = stream.fileno()
     os.set_blocking(fd, False)
     view = memoryview(data)
@@ -72,9 +67,10 @@ def send(stream, frame, deadline):
         except BlockingIOError:
             continue
 
-def run(command, model_call, expected, *, synthetic_fixture_debug=False):
+def run(command, model_call, expected, *, deadline=None, synthetic_fixture_debug=False):
     """model_call(body, remaining_seconds) returns the completed output array."""
-    deadline = time.monotonic() + REVIEW_TIMEOUT_SECONDS
+    if deadline is None:
+        deadline = time.monotonic() + REVIEW_TIMEOUT_SECONDS
     with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=None if synthetic_fixture_debug else subprocess.DEVNULL, env={}, bufsize=0) as guest:
         try:
@@ -84,8 +80,6 @@ def run(command, model_call, expected, *, synthetic_fixture_debug=False):
                 f = frames.read(deadline)
                 if f.get("type") == "model.request" and isinstance(f.get("body"), dict):
                     turns += 1
-                    if turns > MAX_MODEL_TURNS:
-                        raise ReviewError("model turn cap exceeded")
                     output = model_call(f["body"], remaining(deadline))
                     if not isinstance(output, list):
                         raise ReviewError("model output is not an array")

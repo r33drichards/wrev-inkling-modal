@@ -6,7 +6,7 @@ on:
       - 'wrev/**'
       - '.github/workflows/mwrev-check.yml'
   push:
-    branches: ['mwrev/modal-service-candidate']
+    branches: ['main', 'mwrev/modal-service-candidate', 'mwrev/production-account-rollout']
 permissions:
   contents: read
 concurrency:
@@ -40,6 +40,7 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/mwrev-tests"
           source "$RUNNER_TEMP/mwrev-tests/bin/activate"
+          export PYTHONPATH="$PWD/mwrev-service"
           python3 -m pip install 'psycopg[binary]==3.2.10'
           for suite in mwrev-candidate mwrev-gateway mwrev-runner mwrev-inference mwrev-publisher mwrev-service; do
             python3 -m unittest discover -s "$suite" -v || exit 1

@@ -83,7 +83,7 @@ class Store:
         async with await self.connect() as conn:
             r = await conn.execute("""
             UPDATE mwrev_review SET attempt_token = %s, model_attempts = model_attempts + 1,
-            expires_at = now() + interval '30 minutes'
+            expires_at = now() + interval '65 minutes'
             WHERE id = %s AND result IS NULL AND model_attempts < 2
             AND (attempt_token IS NULL OR expires_at <= now())
             RETURNING installation, repository, pr, head, base

@@ -7,11 +7,6 @@ import time
 from urllib.parse import urlsplit
 
 MODEL = "thinkingmachines/Inkling-2-Mini"
-MAX_REQUEST_BYTES = 16 * 1024 * 1024
-MAX_RESPONSE_BYTES = 8 * 1024 * 1024
-MAX_OUTPUT_TOKENS = 8192
-MODEL_TIMEOUT_SECONDS = 180
-
 class GatewayError(RuntimeError):
     """Safe to log; deliberately excludes request and upstream response bodies."""
 
@@ -27,8 +22,6 @@ def upstream_host(origin: str) -> str:
 
 
 def prepare(payload: bytes) -> bytes:
-    if not 0 < len(payload) <= MAX_REQUEST_BYTES:
-        raise GatewayError("invalid model request size")
     try:
         query = json.loads(payload)
     except (ValueError, RecursionError) as exc:
@@ -40,21 +33,15 @@ def prepare(payload: bytes) -> bytes:
     query["store"] = False
     # vLLM does not provide OpenAI's encrypted reasoning store.
     query.pop("include", None)
-    limit = query.get("max_output_tokens", MAX_OUTPUT_TOKENS)
-    if type(limit) is not int or limit <= 0:
-        raise GatewayError("invalid max_output_tokens")
-    query["max_output_tokens"] = min(limit, MAX_OUTPUT_TOKENS)
     try:
         encoded = json.dumps(query, ensure_ascii=True, allow_nan=False).encode()
     except (ValueError, RecursionError) as exc:
         raise GatewayError("invalid normalized model request") from exc
-    if len(encoded) > MAX_REQUEST_BYTES:
-        raise GatewayError("normalized model request too large")
     return encoded
 
 
 def stream(origin: str, credential_headers: Mapping[str, str],
-           payload: bytes) -> Iterator[bytes]:
+           payload: bytes, *, deadline: float) -> Iterator[bytes]:
     """Call only the configured host and path, with no redirect handling.
 
     The trusted caller supplies proxy credentials. Guest headers never enter
@@ -67,8 +54,7 @@ def stream(origin: str, credential_headers: Mapping[str, str],
     headers = {"Modal-Key": credential_headers["Modal-Key"],
                "Modal-Secret": credential_headers["Modal-Secret"],
                "Content-Type": "application/json", "Accept": "text/event-stream"}
-    deadline = time.monotonic() + MODEL_TIMEOUT_SECONDS
-    conn = HTTPSConnection(host, timeout=MODEL_TIMEOUT_SECONDS)
+    conn = HTTPSConnection(host, timeout=time_left(deadline))
     try:
         conn.request("POST", "/v1/responses", body=body, headers=headers)
         response = conn.getresponse()
@@ -76,19 +62,13 @@ def stream(origin: str, credential_headers: Mapping[str, str],
             raise GatewayError(f"model endpoint returned HTTP {response.status}")
         if response.getheader("Content-Type", "").split(";", 1)[0].strip().lower() != "text/event-stream":
             raise GatewayError("model endpoint did not return an event stream")
-        total = 0
         while True:
-            left = deadline - time.monotonic()
-            if left <= 0:
-                raise GatewayError("model stream exceeded time limit")
+            left = time_left(deadline)
             if conn.sock is not None:
                 conn.sock.settimeout(left)
-            data = response.read1(min(65536, MAX_RESPONSE_BYTES - total + 1))
+            data = response.read1(65536)
             if not data:
                 break
-            total += len(data)
-            if total > MAX_RESPONSE_BYTES:
-                raise GatewayError("model stream exceeded byte limit")
             yield data
     except (OSError, ValueError, HTTPException) as exc:
         raise GatewayError("model transport failed") from exc
@@ -128,8 +108,15 @@ def completed_output(chunks: Iterator[bytes]):
     raise GatewayError("model stream ended without a complete response")
 
 
-def model_call(origin, credentials, body):
-    chunks = stream(origin, credentials, json.dumps(body).encode())
+def time_left(deadline):
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise GatewayError("review deadline expired")
+    return left
+
+
+def model_call(origin, credentials, body, *, deadline):
+    chunks = stream(origin, credentials, json.dumps(body).encode(), deadline=deadline)
     try:
         return completed_output(chunks)
     finally:
@@ -137,11 +124,11 @@ def model_call(origin, credentials, body):
 
 MODEL_STARTUP_SECONDS = 900
 
-def wait_ready(origin, credentials):
+def wait_ready(origin, credentials, *, deadline):
     """Wait on the known Modal endpoint before starting a model turn."""
     host = upstream_host(origin)
     route = "/health"
-    deadline = time.monotonic() + MODEL_STARTUP_SECONDS
+    deadline = min(deadline, time.monotonic() + MODEL_STARTUP_SECONDS)
     headers = {key: credentials[key] for key in ("Modal-Key", "Modal-Secret")}
     while time.monotonic() < deadline:
         left = deadline - time.monotonic()
@@ -170,35 +157,11 @@ def wait_ready(origin, credentials):
     raise GatewayError("model did not become ready")
 
 class ReviewModel:
-    """Bound per-review model calls and reserve a final turn."""
-    def __init__(self, origin, credentials, total_turns=20):
+    """No independent turn, time, token, or transfer cap."""
+    def __init__(self, origin, credentials):
         self.origin = origin
         self.credentials = credentials
-        self.total_turns = total_turns
-        self.turn = 0
 
-    def __call__(self, body, _remaining_seconds):
-        self.turn += 1
-        if self.turn == self.total_turns:
-            messages = body.get("input", [])
-            read_calls = {v.get("call_id") for v in messages
-                          if v.get("type") == "function_call" and v.get("name") == "run_js"
-                          and "pr/diff.patch" in v.get("arguments", "")}
-            if not any(v.get("type") == "function_call_output" and v.get("call_id") in read_calls
-                       and v.get("output") and "isError" not in str(v["output"])
-                       for v in messages):
-                raise GatewayError("tool budget exhausted without confirmed diff read")
-            body = dict(body)
-            body["tool_choice"] = "none"
-            body["instructions"] += (
-                "\n\nStop gathering evidence. Return the final findings JSON now using only "
-                "evidence already read; return an empty findings array if there are no supported findings."
-            )
-            fields = {"file":{"type":"string"}, "start_line":{"type":"integer"},
-                      "end_line":{"type":"integer"}, "message":{"type":"string"}}
-            body["text"] = {"format":{"type":"json_schema","name":"wrev_findings","strict":True,
-                "schema":{"type":"object","properties":{"findings":{"type":"array","items":{
-                    "type":"object","properties":fields,"required":list(fields),
-                    "additionalProperties":False}}},
-                    "required":["findings"],"additionalProperties":False}}}
-        return model_call(self.origin, self.credentials, body)
+    def __call__(self, body, remaining_seconds):
+        return model_call(self.origin, self.credentials, body,
+                          deadline=time.monotonic() + remaining_seconds)

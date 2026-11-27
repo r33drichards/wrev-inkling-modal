@@ -37,6 +37,7 @@ def server_command():
     volumes={CACHE_MOUNT: cache}, min_containers=0,
     max_containers=1, scaledown_window=60, timeout=240, startup_timeout=900,
 )
+@modal.concurrent(max_inputs=4)
 @modal.web_server(PORT, startup_timeout=900, requires_proxy_auth=True)
 def serve():
     env = {

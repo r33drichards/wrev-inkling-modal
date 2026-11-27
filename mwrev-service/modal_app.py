@@ -43,12 +43,13 @@ def setup():
         if path not in sys.path:
             sys.path.append(path)
 
-def allowed_repositories():
+def allowed_account():
+    from github_app import AccountScope
     rows = json.loads(os.environ["MWREV_REPOSITORIES"])
     if not isinstance(rows, list) or len(rows) != 1:
         raise RuntimeError("this release expects one explicitly approved repository")
     row = rows[0]
-    return {(int(row["installation_id"]), int(row["repository_id"])):row["repository"]}
+    return AccountScope(int(row["installation_id"]), row["repository"].split("/", 1)[0])
 
 async def connect():
     import psycopg
@@ -62,7 +63,7 @@ def worker():
     from service import Worker
     from store import Store
     cfg = SimpleNamespace(
-        allowed=allowed_repositories(), app_id=int(os.environ["MWREV_GITHUB_APP_ID"]),
+        allowed=allowed_account(), app_id=int(os.environ["MWREV_GITHUB_APP_ID"]),
         private_key=os.environ["MWREV_GITHUB_APP_PRIVATE_KEY"], comments=True,
         native=Path(f"{CODE}/wrev/target/release/wrev"),
         component=Path(f"{CODE}/wrev/target/wasm32-wasip2/release/wrev.wasm"),
@@ -87,10 +88,10 @@ def receiver():
     from store import Store
     store = Store(connect)
     return ingress(os.environ["MWREV_WEBHOOK_SECRET"].encode(),
-                   allowed_repositories(), store.persist, lambda id: store.dispatch(id, spawn))
+                   allowed_account(), store.persist, lambda id: store.dispatch(id, spawn))
 
 @app.function(image=runtime, secrets=[database, allowlist, github, model],
-              cpu=2, memory=4096, min_containers=0, max_containers=1, timeout=1500)
+              cpu=0.25, memory=256, min_containers=0, max_containers=4, timeout=3600)
 async def review(id):
     w = worker()
     state = await w.execute(id)

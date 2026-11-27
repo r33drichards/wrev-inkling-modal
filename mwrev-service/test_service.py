@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 for d in ("mwrev-publisher","mwrev-runner","mwrev-gateway"):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / d))
@@ -51,7 +51,8 @@ class WorkerTest(IsolatedAsyncioTestCase):
                                             "body":"started\n"+marker(25)}
             api.get_pull.return_value = {"state":"open", "head":{"sha":head},"base":{"sha":base},
                                          "labels":[{"name":"mwrev"}]}
-            def clear():
+            def clear(label):
+                self.assertEqual(label, "mwrev")
                 api.edit_comment.assert_called_once()
             api.clear_trigger.side_effect = clear
             worker.publish_terminal(api,25,head,base,64,{"state":outcome,"review":{"findings":[]}})
@@ -66,7 +67,19 @@ class WorkerTest(IsolatedAsyncioTestCase):
         head,base = "a"*40,"b"*40
         api = Mock()
         api.get_pull.return_value = {"state":"open","head":{"sha":head},"base":{"sha":base},
-                                     "labels":[{"name":"mwrev"}]}
+                                     "labels":[{"name":"mrev"}]}
         worker.publish_terminal(api,25,head,base,None,{"state":"failed"})
-        api.clear_trigger.assert_called_once()
+        api.clear_trigger.assert_called_once_with("mrev")
         api.edit_comment.assert_not_called()
+
+
+    def test_rechecks_owner_before_fetching_pr(self):
+        from github_app import AccountScope
+        worker = service.Worker(None, SimpleNamespace(app_id=2, private_key="key",
+                                                     allowed=AccountScope(7, "owner")))
+        with (patch.object(service, "installation_token", return_value="scoped"),
+              patch.object(service, "api") as api):
+            api.return_value = {"id":11, "full_name":"unrelated/repo", "owner":{"login":"unrelated"}}
+            with self.assertRaisesRegex(ValueError, "outside"):
+                worker.pull(7,11,41)
+            api.assert_called_once_with("GET", "/repositories/11", "scoped")

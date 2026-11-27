@@ -72,13 +72,11 @@ pub fn write_host_frame(frame: &Value) -> Result<()> {
 
 #[cfg(all(target_os = "wasi", target_env = "p2", feature = "mwrev-host-stdio"))]
 fn prompt_host(body: Value) -> Result<Vec<Value>> {
-    use std::io::{BufRead, Read};
+    use std::io::BufRead;
     write_host_frame(&json!({"type": "model.request", "body": body}))?;
     let mut line = Vec::new();
-    let limit = 8 * 1024 * 1024;
-    std::io::stdin().lock().take(limit + 1).read_until(b'\n', &mut line)?;
-    anyhow::ensure!(line.len() <= limit as usize && line.ends_with(b"\n"),
-        "Missing or oversized model reply");
+    std::io::stdin().lock().read_until(b'\n', &mut line)?;
+    anyhow::ensure!(line.ends_with(b"\n"), "Missing or incomplete model reply");
     let value: Value = serde_json::from_slice(&line).context("Invalid host model reply")?;
     anyhow::ensure!(value["type"] == "model.response", "Host model call failed");
     value["output"].as_array().cloned().context("Host model reply missing output")

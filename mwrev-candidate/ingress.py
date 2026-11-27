@@ -5,7 +5,7 @@ import json
 import re
 from dataclasses import dataclass
 
-LABEL = "mwrev"
+from github_app import AccountScope, LABELS, trigger_labels
 SHA = re.compile(r"[a-f0-9]{40}")
 DELIVERY = re.compile(r"[a-f0-9-]{1,64}", re.I)
 MAX_BODY = 512 * 1024
@@ -26,15 +26,15 @@ def extract(value, delivery, allowed):
         return None
     install = value["installation"]["id"]
     repo = value["repository"]["id"]
-    if type(install) is not int or type(repo) is not int or (install, repo) not in allowed:
+    if not allowed.accepts(install, repo, value["repository"]):
         return None
     pr = value["pull_request"]
     if pr["state"] != "open":
         return None
     if value["action"] == "labeled":
-        if value["label"]["name"] != LABEL:
+        if value["label"]["name"] not in LABELS:
             return None
-    elif not any(label["name"] == LABEL for label in pr["labels"]):
+    elif not trigger_labels(pr):
         return None
     number, head, base = pr["number"], pr["head"]["sha"], pr["base"]["sha"]
     if type(number) is not int or number <= 0 or not SHA.fullmatch(head) or not SHA.fullmatch(base):
@@ -43,8 +43,8 @@ def extract(value, delivery, allowed):
 
 def app(secret, allowed, persist, dispatch):
     """persist() returns a durable id or None; dispatch() confirms Modal acceptance."""
-    if not secret or not allowed:
-        raise ValueError("webhook secret and explicit allowlist required")
+    if not secret or not isinstance(allowed, AccountScope):
+        raise ValueError("webhook secret and explicit account scope required")
 
     async def ingress(scope, receive, send):
         if scope["type"] != "http":

@@ -5,13 +5,14 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 
 from comment import start, finish
-from github_app import Pull, installation_token
+from github_app import Pull, api, installation_token, trigger_labels
 from gateway import wait_ready, ReviewModel
-from wasm_runner import MAX_MODEL_TURNS, run, wasi_arguments
+from wasm_runner import REVIEW_TIMEOUT_SECONDS, remaining, run, wasi_arguments
 
-PREPARE_TIMEOUT = 120
+PREPARE_TIMEOUT = 300
 
 async def sync(fn, *args, **kwargs):
     return await asyncio.to_thread(fn, *args, **kwargs)
@@ -21,21 +22,24 @@ class Worker:
         self.store, self.config = store, config
 
     def pull(self, installation, repository, pr, *, write=False):
-        repo = self.config.allowed[(installation, repository)]
+        scope = self.config.allowed
+        if installation != scope.installation:
+            raise ValueError("unexpected GitHub App installation")
         token = installation_token(self.config.app_id, self.config.private_key,
                                    installation, repository, write=write)
+        metadata = api("GET", f"/repositories/{repository}", token)
+        repo = scope.repository_name(repository, metadata)
         return repo, token, Pull(repo, pr, token)
 
     @staticmethod
     def state(pr, head, base):
-        labels = {label["name"] for label in pr.get("labels", [])}
-        if pr.get("state") != "open" or "mwrev" not in labels:
+        if pr.get("state") != "open" or not trigger_labels(pr):
             return "cancelled"
         if pr["head"]["sha"] != head or pr["base"]["sha"] != base:
             return "superseded"
         return "completed"
 
-    def review(self, repo, pr, base, head, token, initial):
+    def review(self, repo, pr, base, head, token, initial, deadline):
         cfg = self.config
         with tempfile.TemporaryDirectory(prefix="mwrev-review-") as temp:
             root = Path(temp)
@@ -48,18 +52,19 @@ class Worker:
             }))
             evidence = root / "evidence"
             subprocess.run([str(cfg.native), "prepare-review", str(request), str(evidence)],
-                           check=True, timeout=PREPARE_TIMEOUT,
+                           check=True, timeout=min(PREPARE_TIMEOUT, remaining(deadline)),
                            env={"PATH":"/usr/bin:/bin", "HOME":temp, "GIT_TERMINAL_PROMPT":"0",
                                 "GIT_CONFIG_GLOBAL":"/dev/null", "GIT_CONFIG_NOSYSTEM":"1",
                                 "WREV_GITHUB_TOKEN":token},
                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
-            wait_ready(cfg.model_origin, cfg.model_auth)
+            wait_ready(cfg.model_origin, cfg.model_auth, deadline=deadline)
             expected = {"repo":f"https://github.com/{repo}", "pr_number":pr, "base":base, "head":head}
             return run(wasi_arguments(cfg.wasmtime, cfg.component, evidence, inputs),
-                       ReviewModel(cfg.model_origin, cfg.model_auth, MAX_MODEL_TURNS), expected)
+                       ReviewModel(cfg.model_origin, cfg.model_auth), expected, deadline=deadline)
 
     async def execute(self, review_id):
+        deadline = time.monotonic() + REVIEW_TIMEOUT_SECONDS
         claim = await self.store.claim(review_id)
         if not claim:
             return "duplicate"
@@ -80,7 +85,7 @@ class Worker:
                 comment = await sync(start, write, **key, comment_id=record[0])
                 if not await self.store.remember_comment(review_id, attempt, comment):
                     return "claim_lost"
-            payload = await sync(self.review, repo, pr, base, head, token, initial)
+            payload = await sync(self.review, repo, pr, base, head, token, initial, deadline)
             state = self.state(await sync(read.get_pull), head, base)
             ok = await self.store.finish(review_id, attempt, {
                 "state":state, **({"review":payload} if state == "completed" else {}),
@@ -101,14 +106,22 @@ class Worker:
             return
         # Do not clear another revision's trigger. Check after the edit, as
         # close to the GitHub DELETE as possible.
-        if self.state(write.get_pull(), head, base) != "completed":
+        initial = write.get_pull()
+        if self.state(initial, head, base) != "completed":
             return
-        try:
-            write.clear_trigger()
-        except Exception:
-            # A successful removal with a lost response is safe to reconcile.
-            if self.state(write.get_pull(), head, base) == "completed":
-                raise
+        for label in sorted(trigger_labels(initial)):
+            current = write.get_pull()
+            if self.state(current, head, base) != "completed":
+                return
+            if label not in trigger_labels(current):
+                continue
+            try:
+                write.clear_trigger(label)
+            except Exception:
+                # A successful removal with a lost response is safe to reconcile.
+                current = write.get_pull()
+                if self.state(current, head, base) == "completed" and label in trigger_labels(current):
+                    raise
 
     async def publish(self):
         done = 0

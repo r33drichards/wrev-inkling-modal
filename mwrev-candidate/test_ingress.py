@@ -2,13 +2,14 @@ import hmac
 import json
 import unittest
 from ingress import app
+from github_app import AccountScope
 
 SECRET = b"fixture-only"
 SHA = "1" * 40
 
 def payload(label="mwrev"):
     return dict(action="labeled", label={"name": label}, installation={"id": 7},
-                repository={"id": 11}, pull_request={"state": "open", "draft": True,
+                repository={"id": 11, "full_name": "owner/repo", "owner": {"login": "owner"}}, pull_request={"state": "open", "draft": True,
                 "number": 3, "head": {"sha": SHA}, "base": {"sha": "2"*40}})
 
 class IngressTest(unittest.IsolatedAsyncioTestCase):
@@ -27,7 +28,7 @@ class IngressTest(unittest.IsolatedAsyncioTestCase):
             events.append(msg)
         async def receive():
             return {"type": "http.request", "body": body}
-        await app(SECRET, {(7, 11)}, persist, dispatch)(
+        await app(SECRET, AccountScope(7, "owner"), persist, dispatch)(
             {"type": "http", "method": "POST", "path": "/github/webhook", "headers": [
                 (b"x-hub-signature-256", signature), (b"x-github-event", b"pull_request"),
                 (b"x-github-delivery", b"deadbeef")]}, receive, send)
@@ -38,6 +39,18 @@ class IngressTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([e[0] for e in self.effects], ["persist", "dispatch"])
         self.assertEqual(self.effects[0][1].head, SHA)
         self.assertEqual(self.effects[1][1], 42)
+
+    async def test_mrev_on_another_owned_repo(self):
+        data = payload("mrev")
+        data["repository"] = {"id": 95, "full_name": "OWNER/other", "owner": {"login": "Owner"}}
+        self.assertEqual(await self.post(json.dumps(data).encode()), 202)
+        self.assertEqual(self.effects[0][1].repository, 95)
+
+    async def test_signed_other_owner_never_dispatches(self):
+        data = payload()
+        data["repository"] = {"id": 11, "full_name": "other/repo", "owner": {"login": "other"}}
+        self.assertEqual(await self.post(json.dumps(data).encode()), 204)
+        self.assertEqual(self.effects, [])
 
     async def test_wrong_label(self):
         self.assertEqual(await self.post(json.dumps(payload("wrev")).encode()), 204)
