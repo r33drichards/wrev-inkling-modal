@@ -39,6 +39,20 @@ Wrev currently posts streaming `/v1/responses` requests to `api.openai.com` with
 2. Replay a captured, scrubbed Wrev request against a mock. Then test the pinned vLLM build for incremental SSE, `run_js` tool calls, call IDs, tool-result round trip, reasoning separation, and a final valid findings object. Preserve the existing provider path.
 3. If direct streaming Responses fails the contract, use a narrow Chat Completions adapter that preserves tool IDs, ordering, failures and output schema. Do not switch Wrev into assuming provider compatibility or silent fallbacks.
 
+## Run a public PR acceptance test
+
+From the integration repository, with an authenticated Modal CLI:
+
+```sh
+modal run scripts/modal_review.py --repo r33drichards/webhook --pr 11
+# Opt in to one GitHub comment that is edited as the run progresses (requires gh auth):
+modal run scripts/modal_review.py --repo r33drichards/webhook --pr 11 --comment
+```
+
+Use an open public PR. The runner pins and stages its base and head without running PR code, then sends a signed synthetic label delivery to the Go webhook worker in the test process. It runs the Wrev WASI Preview 2 component in Wasmtime and talks to real Inkling 2 Mini through streaming Responses. It uses one ephemeral B200 with the pinned CUDA 13.2 vLLM nightly and DSpark. This is not a deployed webhook or production runner; the PR files are public and no GitHub credentials enter Modal. The optional comment is posted by local `gh` just before GPU review and edited in place on success or failure. The runner checks that the PR is still open and its base and head still match before publishing findings. It never adds, removes or manages a label.
+
+Unlike the initial sizing suggestion above, this acceptance profile leaves `--max-model-len` and `--max-num-seqs` unset. It sets `WREV_MODEL_TIMEOUT_SECS=180`, `WREV_SCRIPT_MEMORY_BYTES=104857600`, and `WREV_SCRIPT_OUTPUT_BYTES=104857600`. The test proxy still enforces its own transport limits and caps model turns at 20 and output at 8,192 tokens per turn. The GPU invocation is capped at 25 minutes. A 100 MiB script-output ceiling is not a promise that a result of that size can fit in model context or pass the proxy.
+
 ## Acceptance gates
 
 - **CPU-only:** synthetic signed label event queues one review; duplicate delivery does not spawn another; invalid signature/wrong repo triggers nothing; cancellation and restart behave predictably.
