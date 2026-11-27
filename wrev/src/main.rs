@@ -9,7 +9,7 @@ mod config;
 mod hosted_auth;
 mod model;
 mod review;
-#[cfg(all(target_os = "wasi", target_env = "p2"))]
+#[cfg(all(target_os = "wasi", target_env = "p2", not(feature = "mwrev-host-stdio")))]
 mod wasi_http;
 
 use anyhow::{Result, bail};

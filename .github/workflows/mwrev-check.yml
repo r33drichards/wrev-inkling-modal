@@ -1,0 +1,64 @@
+name: mwrev CPU checks
+on:
+  pull_request:
+    paths:
+      - 'mwrev-*/**'
+      - 'wrev/**'
+      - '.github/workflows/mwrev-check.yml'
+  push:
+    branches: ['main', 'mwrev/modal-service-candidate', 'mwrev/production-account-rollout']
+permissions:
+  contents: read
+concurrency:
+  group: mwrev-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  cpu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mwrev_test
+          POSTGRES_PASSWORD: local_ci_fixture_only
+          POSTGRES_DB: mwrev_test
+        options: >-
+          --health-cmd "pg_isready -U mwrev_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 8
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Python contract tests
+        env:
+          MWREV_TEST_DATABASE_URL: postgresql://mwrev_test:local_ci_fixture_only@localhost:5432/mwrev_test
+        run: |
+          python3 -m venv "$RUNNER_TEMP/mwrev-tests"
+          source "$RUNNER_TEMP/mwrev-tests/bin/activate"
+          export PYTHONPATH="$PWD/mwrev-service"
+          python3 -m pip install 'psycopg[binary]==3.2.10'
+          for suite in mwrev-candidate mwrev-gateway mwrev-runner mwrev-inference mwrev-publisher mwrev-service; do
+            python3 -m unittest discover -s "$suite" -v || exit 1
+          done
+      - name: Install CPU build tools
+        run: |
+          rustup toolchain install 1.100.0 --profile minimal --target wasm32-wasip2
+          curl -fsSL --retry 3 https://github.com/bytecodealliance/wasmtime/releases/download/v51.0.0/wasmtime-v51.0.0-x86_64-linux.tar.xz |
+            tar -xJ -C "$RUNNER_TEMP"
+          curl -fsSL --retry 3 https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-24/wasi-sdk-24.0-x86_64-linux.tar.gz |
+            tar -xz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/wasmtime-v51.0.0-x86_64-linux" >> "$GITHUB_PATH"
+          echo "WASI_SDK=$RUNNER_TEMP/wasi-sdk-24.0-x86_64-linux" >> "$GITHUB_ENV"
+          echo "CC_wasm32_wasip2=$RUNNER_TEMP/wasi-sdk-24.0-x86_64-linux/bin/clang" >> "$GITHUB_ENV"
+      - name: Build and link without guest HTTP
+        working-directory: wrev
+        run: |
+          cargo +1.100.0 build --locked --target wasm32-wasip2 --features mwrev-host-stdio --bin wrev
+          wasmtime run target/wasm32-wasip2/debug/wrev.wasm --help
+      - name: Exercise mounted guest with mock model and real QuickJS
+        run: python3 mwrev-runner/smoke_guest.py "$(command -v wasmtime)" wrev/target/wasm32-wasip2/debug/wrev.wasm
