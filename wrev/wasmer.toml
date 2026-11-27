@@ -1,0 +1,16 @@
+[package]
+name = "r33drichards/wrev"
+version = "0.1.0"
+
+[[module]]
+name = "wrev"
+source = "dist/wrev.wasm"
+abi = "wasi"
+
+[[command]]
+name = "wrev"
+module = "wrev"
+runner = "https://webc.org/runner/wcgi"
+
+[command.annotations.wcgi]
+dialect = "rfc-3875"

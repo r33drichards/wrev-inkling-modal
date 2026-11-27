@@ -1,0 +1,59 @@
+[package]
+name = "wrev"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Label-triggered pull request reviews with read-only filesystem evidence"
+
+[features]
+default = ["quickjs-tools"]
+quickjs-tools = ["dep:rquickjs"]
+sqlite-backend = ["dep:rusqlite"]
+mysql-backend = ["dep:mysql", "dep:rustls", "dep:ring", "dep:subtle"]
+
+[dependencies]
+rusqlite = { version = "0.37", features = ["bundled"], optional = true }
+ring = { version = "0.17", optional = true }
+subtle = { version = "2", optional = true }
+sha2 = "0.10"
+mysql = { version = "26", optional = true, default-features = false, features = ["minimal-rust", "rustls-tls-ring"] }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
+anyhow = "1"
+config = { version = "0.15.27", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+hmac = "0.12"
+hex = "0.4"
+rquickjs = { version = "=0.14.0", features = ["futures"], optional = true }
+
+tokio = { version = "1", features = ["rt", "time"] }
+url = "2"
+
+[target.'cfg(not(all(target_os = "wasi", target_env = "p2")))'.dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls", "form"] }
+rmcp = { version = "3.10", default-features = false, features = ["client", "transport-streamable-http-client-reqwest", "reqwest"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+octocrab = { version = "=0.54.9", default-features = false, features = ["default-client", "rustls", "rustls-ring"] }
+
+[target.'cfg(not(target_os = "wasi"))'.dependencies]
+tempfile = "3"
+
+[target.'cfg(all(target_os = "wasi", target_env = "p2"))'.dependencies]
+wasi = "0.14"
+
+[dev-dependencies]
+tiny_http = "0.12"
+
+[target.'cfg(unix)'.dependencies]
+rand = "0.8"
+jsonwebtoken = "9"
+fs2 = "0.4"
+
+[lib]
+name = "minimal_mcp_agent"
+
+[[bin]]
+name = "wrev"
+path = "src/main.rs"
+required-features = ["quickjs-tools"]

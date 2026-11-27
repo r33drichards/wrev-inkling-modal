@@ -1,0 +1,4 @@
+CREATE TABLE IF NOT EXISTS wrev_chatgpt_credentials (
+    id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
+    sealed MEDIUMBLOB NOT NULL
+) ENGINE=InnoDB;

@@ -1,0 +1,77 @@
+name: Publish Wrev reviewer pin
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wrev-worker-pin
+  cancel-in-progress: false
+
+jobs:
+  update-pin:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.WREV_WORKER_TOKEN }}
+      WORKER_REPO: r33drichards/webhook
+      PIN_BRANCH: automation/wrev-revision
+    steps:
+      - name: Open or update the worker pin pull request
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::error::Configure the WREV_WORKER_TOKEN repository secret first."
+            exit 1
+          fi
+
+          # Resolve the latest main after entering the concurrency group. GitHub
+          # can replace pending runs, so an event SHA may already be stale.
+          revision=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          gh auth setup-git
+          gh repo clone "$WORKER_REPO" worker -- --single-branch --branch master
+          cd worker
+          old_tip=$(git ls-remote --heads origin "refs/heads/$PIN_BRANCH" | cut -f1)
+
+          export revision
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+
+          dockerfile = Path("Dockerfile")
+          updated, count = re.subn(
+              r"(?m)^ARG WREV_REVISION=[0-9a-f]{40}$",
+              "ARG WREV_REVISION=" + os.environ["revision"],
+              dockerfile.read_text(),
+          )
+          if count != 2:
+              raise SystemExit(f"Expected two Wrev build pins, found {count}")
+          dockerfile.write_text(updated)
+          PY
+
+          if git diff --quiet -- Dockerfile; then
+            echo "Worker already pins $revision"
+            exit 0
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Dockerfile
+          git commit -m "Pin Wrev to $revision"
+          git push --force-with-lease="refs/heads/$PIN_BRANCH:$old_tip" origin "HEAD:refs/heads/$PIN_BRANCH"
+
+          pr=$(gh pr list -R "$WORKER_REPO" --base master --head "$PIN_BRANCH" --state open --json number --jq '.[0].number // empty')
+          body="Pin the native reviewer to r33drichards/wrev@$revision. Merging this PR triggers Railway's production worker build."
+          if [[ -n "$pr" ]]; then
+            gh pr edit "$pr" -R "$WORKER_REPO" --body "$body"
+          else
+            gh pr create -R "$WORKER_REPO" --base master --head "r33drichards:$PIN_BRANCH" --title 'Update the Wrev reviewer pin' --body "$body"
+          fi

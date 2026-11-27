@@ -1,0 +1,8 @@
+kind: wasmer.io/App.v0
+owner: r33drichards
+name: wrev
+package: .
+cli_args:
+  - wcgi
+redirect:
+  force_https: true

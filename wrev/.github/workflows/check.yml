@@ -1,0 +1,75 @@
+name: Check
+on: [push, pull_request]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+env:
+  RUST_VERSION: '1.100.0'
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: '-D warnings'
+  RUSTDOCFLAGS: '-D warnings'
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --component rustfmt --component clippy
+          rustup override set "$RUST_VERSION"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-bin: false
+          save-if: ${{ github.event_name == 'push' && github.ref_name == github.event.repository.default_branch }}
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Lint the default build
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Lint all features
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Lint the library without default features
+        run: cargo clippy --locked --no-default-features --lib -- -D warnings
+      - name: Test the default build
+        run: cargo test --locked
+      - name: Test all features
+        run: cargo test --locked --all-features
+
+  wasmtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_TARGET_WASM32_WASIP2_RUNNER: wasmtime run --dir /tmp::/tmp
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --target wasm32-wasip2
+          rustup override set "$RUST_VERSION"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: wasi-sdk-24
+          cache-bin: false
+          save-if: ${{ github.event_name == 'push' && github.ref_name == github.event.repository.default_branch }}
+      - name: Install Wasmtime
+        shell: bash
+        run: |
+          curl -fsSL --retry 3 https://github.com/bytecodealliance/wasmtime/releases/download/v51.0.0/wasmtime-v51.0.0-x86_64-linux.tar.xz |
+            tar -xJ -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/wasmtime-v51.0.0-x86_64-linux" >> "$GITHUB_PATH"
+      - name: Install WASI SDK
+        shell: bash
+        run: |
+          curl -fsSL --retry 3 https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-24/wasi-sdk-24.0-x86_64-linux.tar.gz |
+            tar -xz -C "$RUNNER_TEMP"
+          echo "WASI_SDK=$RUNNER_TEMP/wasi-sdk-24.0-x86_64-linux" >> "$GITHUB_ENV"
+          echo "CC_wasm32_wasip2=$RUNNER_TEMP/wasi-sdk-24.0-x86_64-linux/bin/clang" >> "$GITHUB_ENV"
+      - run: cargo test --locked --target wasm32-wasip2 --features sqlite-backend --lib
+      - run: cargo build --locked --target wasm32-wasip2 --features sqlite-backend --bin wrev
+      - run: wasmtime run -S http target/wasm32-wasip2/debug/wrev.wasm --help

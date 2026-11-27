@@ -1,0 +1,25 @@
+--- a/quickjs/cutils.h
++++ b/quickjs/cutils.h
+@@ -1565,0 +1566,11 @@
++#ifdef QUICKJS_WASIX_PROBE
++#include <wasi/api.h>
++static inline uint64_t js__wasix_clock(__wasi_clockid_t clock)
++{
++    __wasi_timestamp_t nanos = 0;
++    if (__wasi_clock_time_get(clock, 1, &nanos))
++        abort();
++    return nanos;
++}
++#endif
++
+@@ -1610 +1621,3 @@
+-#ifdef __DJGPP
++#ifdef QUICKJS_WASIX_PROBE
++  return js__wasix_clock(__WASI_CLOCKID_MONOTONIC);
++#elif defined(__DJGPP)
+@@ -1626,0 +1640,3 @@
++#ifdef QUICKJS_WASIX_PROBE
++    return js__wasix_clock(__WASI_CLOCKID_REALTIME) / 1000;
++#else
+@@ -1633,0 +1650 @@
++#endif

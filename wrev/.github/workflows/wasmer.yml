@@ -1,0 +1,97 @@
+name: Deploy wrev to Wasmer
+
+on:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wrev-wasmer-production
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: wasix-org/cargo-wasix@v0.1.34
+        with:
+          toolchain-version: v2026-09-18.1+rust-1.97
+      - name: Enable the WASIX toolchain host linker
+        run: chmod +x "$(rustc +wasix --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld/ld.lld"
+      - name: Install WASI SDK
+        run: |
+          curl --fail --silent --show-error --location \
+            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP"
+          printf 'CC_wasm32_wasmer_wasi=%s\n' "$RUNNER_TEMP/wasi-sdk-34.0-x86_64-linux/bin/clang" >> "$GITHUB_ENV"
+      - name: Install Wasmer
+        run: |
+          mkdir -p "$RUNNER_TEMP/wasmer"
+          curl --fail --silent --show-error --location \
+            https://github.com/wasmerio/wasmer/releases/download/v7.5.0/wasmer-linux-amd64.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP/wasmer" bin/wasmer
+          printf '%s\n' "$RUNNER_TEMP/wasmer/bin" >> "$GITHUB_PATH"
+      - name: Build and verify the package
+        run: |
+          python3 scripts/build_wasix.py --features mysql-backend
+          bash tests/wasmer_smoke.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wrev-wasix
+          path: |
+            dist/wrev.wasm
+            app.yaml
+            wasmer.toml
+          if-no-files-found: error
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment: production
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wrev-wasix
+      - name: Install Wasmer
+        run: |
+          mkdir -p "$RUNNER_TEMP/wasmer"
+          curl --fail --silent --show-error --location \
+            https://github.com/wasmerio/wasmer/releases/download/v7.5.0/wasmer-linux-amd64.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP/wasmer" bin/wasmer
+          printf '%s\n' "$RUNNER_TEMP/wasmer/bin" >> "$GITHUB_PATH"
+      - name: Deploy and check the WCGI handler
+        env:
+          WASMER_TOKEN: ${{ secrets.WASMER_TOKEN }}
+        run: |
+          test -n "$WASMER_TOKEN" || { echo 'Missing production WASMER_TOKEN'; exit 1; }
+          sed -i "s/^version = \"0.1.0\"$/version = \"0.1.0-g$GITHUB_SHA\"/" wasmer.toml
+          umask 077
+          if ! wasmer deploy --non-interactive --no-wait --format json \
+              > "$RUNNER_TEMP/deployment.json" 2> "$RUNNER_TEMP/deployment.log"; then
+            echo 'Wasmer deploy failed. Check the Wasmer dashboard for details.'
+            exit 1
+          fi
+          url=$(jq -er '.url | select(test("^https://[a-zA-Z0-9.-]+/?$"))' "$RUNNER_TEMP/deployment.json")
+          url=${url%/}
+          for attempt in {1..20}; do
+            health=$(curl --silent --max-time 10 --output /dev/null --write-out '%{http_code}' "$url/health" || true)
+            webhook=$(curl --silent --max-time 10 --output /dev/null --write-out '%{http_code}' \
+              --data '{}' "$url/github/webhook" || true)
+            if [[ "$health" == 200 && "$webhook" == 401 ]]; then
+              printf 'Verified Wasmer deployment for %s at %s\n' "$GITHUB_SHA" "$url"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo 'Expected /health to return 200 and an unsigned webhook to return 401.'
+          exit 1
