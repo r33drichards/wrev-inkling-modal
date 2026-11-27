@@ -94,3 +94,43 @@ def stream(origin: str, credential_headers: Mapping[str, str],
         raise GatewayError("model transport failed") from exc
     finally:
         conn.close()
+
+
+def completed_output(chunks: Iterator[bytes]):
+    """Parse complete SSE output; truncated or failed streams never pass."""
+    pending = bytearray()
+    lines = []
+    for chunk in chunks:
+        pending.extend(chunk)
+        lines_in_chunk = pending.split(b"\n")
+        pending = lines_in_chunk.pop()
+        for raw in lines_in_chunk:
+            line = raw.rstrip(b"\r")
+            if line.startswith(b"data:"):
+                lines.append(line[5:].removeprefix(b" "))
+            elif not line and lines:
+                try:
+                    event = json.loads(b"\n".join(lines))
+                except (ValueError, RecursionError) as exc:
+                    raise GatewayError("invalid model stream event") from exc
+                lines.clear()
+                if not isinstance(event, dict):
+                    raise GatewayError("invalid model stream event")
+                kind = event.get("type")
+                if kind == "response.completed":
+                    response = event.get("response")
+                    output = response.get("output") if isinstance(response, dict) else None
+                    if not isinstance(output, list):
+                        raise GatewayError("completed model stream missing output")
+                    return output
+                if kind in ("error", "response.failed", "response.incomplete"):
+                    raise GatewayError("model did not complete its response")
+    raise GatewayError("model stream ended without a complete response")
+
+
+def model_call(origin, credentials, body):
+    chunks = stream(origin, credentials, json.dumps(body).encode())
+    try:
+        return completed_output(chunks)
+    finally:
+        chunks.close()

@@ -19,6 +19,7 @@ pub fn client() -> Result<Client> {
     crate::config::model_timeout()
 }
 
+#[cfg(not(all(target_os = "wasi", target_env = "p2", feature = "mwrev-host-stdio")))]
 pub fn models(token: &str) -> Result<Vec<Value>> {
     #[cfg(not(all(target_os = "wasi", target_env = "p2")))]
     let response = client()?
@@ -28,7 +29,7 @@ pub fn models(token: &str) -> Result<Vec<Value>> {
         .error_for_status()?;
     #[cfg(not(all(target_os = "wasi", target_env = "p2")))]
     let value: Value = response.json()?;
-    #[cfg(all(target_os = "wasi", target_env = "p2"))]
+    #[cfg(all(target_os = "wasi", target_env = "p2", not(feature = "mwrev-host-stdio")))]
     let value: Value = serde_json::from_reader(BufReader::new(crate::wasi_http::request(
         wasi::http::types::Method::Get,
         "api.openai.com",
@@ -46,6 +47,40 @@ pub fn models(token: &str) -> Result<Vec<Value>> {
         .collect())
 }
 
+#[cfg(all(target_os = "wasi", target_env = "p2", feature = "mwrev-host-stdio"))]
+pub fn models(_token: &str) -> Result<Vec<Value>> {
+    bail!("Model discovery is not available in the host-stdio build");
+}
+
+#[cfg(all(target_os = "wasi", target_env = "p2", feature = "mwrev-host-stdio"))]
+pub fn host_stdio() -> bool {
+    std::env::var("WREV_MODEL_TRANSPORT").as_deref() == Ok("host-stdio")
+}
+
+#[cfg(all(target_os = "wasi", target_env = "p2", feature = "mwrev-host-stdio"))]
+pub fn write_host_frame(frame: &Value) -> Result<()> {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    serde_json::to_writer(&mut out, frame)?;
+    out.write_all(b"\n")?;
+    out.flush()?;
+    Ok(())
+}
+
+#[cfg(all(target_os = "wasi", target_env = "p2", feature = "mwrev-host-stdio"))]
+fn prompt_host(body: Value) -> Result<Vec<Value>> {
+    use std::io::Read;
+    write_host_frame(&json!({"type": "model.request", "body": body}))?;
+    let mut line = Vec::new();
+    let limit = 8 * 1024 * 1024;
+    std::io::stdin().lock().take(limit + 1).read_until(b'\n', &mut line)?;
+    anyhow::ensure!(line.len() <= limit as usize && line.ends_with(b"\n"),
+        "Missing or oversized model reply");
+    let value: Value = serde_json::from_slice(&line).context("Invalid host model reply")?;
+    anyhow::ensure!(value["type"] == "model.response", "Host model call failed");
+    value["output"].as_array().cloned().context("Host model reply missing output")
+}
+
 pub fn prompt(
     client: &Client,
     token: &str,
@@ -57,6 +92,12 @@ pub fn prompt(
     let body = json!({"model": model, "input": messages,
         "tools": tools, "instructions": instructions, "store": false, "stream": true,
         "include": ["reasoning.encrypted_content"]});
+    #[cfg(all(target_os = "wasi", target_env = "p2", feature = "mwrev-host-stdio"))]
+    {
+        let _ = (client, token);
+        anyhow::ensure!(host_stdio(), "Host-stdio transport must be explicitly enabled");
+        return prompt_host(body);
+    }
     #[cfg(not(all(target_os = "wasi", target_env = "p2")))]
     let response = client
         .post("https://api.openai.com/v1/responses")
@@ -64,7 +105,7 @@ pub fn prompt(
         .json(&body)
         .send()?
         .error_for_status()?;
-    #[cfg(all(target_os = "wasi", target_env = "p2"))]
+    #[cfg(all(target_os = "wasi", target_env = "p2", not(feature = "mwrev-host-stdio")))]
     let response = crate::wasi_http::request(
         wasi::http::types::Method::Post,
         "api.openai.com",
@@ -73,7 +114,10 @@ pub fn prompt(
         Some(&serde_json::to_vec(&body)?),
         *client,
     )?;
-    read_completed(BufReader::new(response))
+    #[cfg(not(all(target_os = "wasi", target_env = "p2", feature = "mwrev-host-stdio")))]
+    {
+        read_completed(BufReader::new(response))
+    }
 }
 
 // SSE data can span multiple lines. Only a completed response is a successful turn.

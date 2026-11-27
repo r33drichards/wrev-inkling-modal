@@ -219,14 +219,23 @@ pub fn run_mounted() -> Result<()> {
         metadata(&root)? == snapshot,
         "Mounted snapshot does not match the review request"
     );
-    println!(
-        "{}",
-        review(
-            &snapshot,
-            || Ok(Mount::supplied(root)),
-            config::chatgpt_token
-        )?
-    );
+    let result = review(
+        &snapshot,
+        || Ok(Mount::supplied(root)),
+        || {
+            #[cfg(all(target_os = "wasi", target_env = "p2", feature = "mwrev-host-stdio"))]
+            if model::host_stdio() {
+                return Ok(String::new());
+            }
+            config::chatgpt_token()
+        },
+    )?;
+    #[cfg(all(target_os = "wasi", target_env = "p2", feature = "mwrev-host-stdio"))]
+    if model::host_stdio() {
+        model::write_host_frame(&json!({"type": "review.result", "result": result}))?;
+        return Ok(());
+    }
+    println!("{result}");
     Ok(())
 }
 

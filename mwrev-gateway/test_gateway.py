@@ -53,3 +53,11 @@ class GatewayTest(unittest.TestCase):
             with self.assertRaisesRegex(gateway.GatewayError, "byte limit"):
                 list(gateway.stream("https://app.modal.run",
                     {"Modal-Key":"key","Modal-Secret":"secret"}, b'{"input":[]}'))
+
+    def test_sse_chunk_boundaries_and_incomplete(self):
+        chunks = iter([b'data: {"type":"response.com', b'pleted","response":{"output":[]}}\r\n\r\n'])
+        self.assertEqual(gateway.completed_output(chunks), [])
+        with self.assertRaises(gateway.GatewayError):
+            gateway.completed_output(iter([b'data: {"type":"response.incomplete"}\n\n']))
+        with self.assertRaises(gateway.GatewayError):
+            gateway.completed_output(iter([b'data: {"type":"response.completed"}']))
