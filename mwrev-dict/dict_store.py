@@ -1,4 +1,4 @@
-"""Experimental single-writer coordinator; not wired to production ingress."""
+"""Single-writer coordinator and read-only repair probe for Modal Dict."""
 import json
 import time
 import uuid
@@ -19,6 +19,28 @@ def review_id():
     return str(uuid.uuid4())
 
 
+def needs_repair(job):
+    """Keep unfinished jobs and results with pending GitHub effects eligible."""
+    return (job["result"] is None or
+            (job["published_at"] is None and (job["comment"] is not None
+                                             or job["result"]["state"] == "failed")))
+
+
+def decode_state(raw):
+    state = json.loads(raw) if raw is not None else {
+        "schema": SCHEMA, "jobs": {}, "deliveries": {},
+    }
+    if state["schema"] != SCHEMA:
+        raise ValueError("incompatible review state")
+    return state
+
+
+async def has_repair_work(data):
+    """Read a coherent snapshot; never write or call the coordinator."""
+    state = decode_state(await data.get.aio(KEY))
+    return any(needs_repair(job) for job in state["jobs"].values())
+
+
 class Coordinator:
     """One operation at a time, one durable Dict write per transition.
 
@@ -34,12 +56,7 @@ class Coordinator:
         op = self.OPERATIONS.get(action)
         if op is None:
             raise ValueError("unknown state operation")
-        raw = await self.data.get.aio(KEY)
-        state = json.loads(raw) if raw is not None else {
-            "schema": SCHEMA, "jobs": {}, "deliveries": {}
-        }
-        if state["schema"] != SCHEMA:
-            raise ValueError("incompatible review state")
+        state = decode_state(await self.data.get.aio(KEY))
         result, dirty = op(self, state, self.clock(), *args)
         if dirty:
             # A failure, including an ambiguous reply, is not an ack. A retry
@@ -49,15 +66,17 @@ class Coordinator:
         return result
 
     def persist(self, state, now, delivery, installation, repository, pr, head, base):
+        # Idle repair no longer wakes this writer just to expire history.
+        pruned = self.prune_settled(state, now)
         key = f"{installation}:{repository}:{delivery.lower()}"
         identity = [installation, repository, pr, head, base]
         if key in state["deliveries"]:
             id = state["deliveries"][key]
             if state["jobs"][id]["identity"] != identity:
                 raise ValueError("delivery identity changed")
-            return id, False
+            return id, pruned
         id = next((id for id, job in state["jobs"].items()
-                   if job["identity"] == identity and self.unpublished(job)), None)
+                   if job["identity"] == identity and needs_repair(job)), None)
         if id is None:
             id = review_id()
             state["jobs"][id] = {
@@ -67,12 +86,6 @@ class Coordinator:
             }
         state["deliveries"][key] = id
         return id, True
-
-    @staticmethod
-    def unpublished(job):
-        return (job["result"] is None or
-                (job["published_at"] is None and (job["comment"] is not None
-                                                 or job["result"]["state"] == "failed")))
 
     @staticmethod
     def ready(j, now):
@@ -148,7 +161,7 @@ class Coordinator:
     def publications(self, state, now):
         return [(id, *j["identity"], j["comment"], j["result"])
                 for id, j in state["jobs"].items()
-                if j["result"] is not None and self.unpublished(j)
+                if j["result"] is not None and needs_repair(j)
                 and j["publish_after"] <= now][:BATCH], False
 
     def mark_published(self, state, now, id, comment):
@@ -165,7 +178,7 @@ class Coordinator:
         jobs = state["jobs"].values()
         return {"active":sum(j["result"] is None for j in jobs),
                 "claimed":sum(self.owns(j, now, j["attempt"]) for j in jobs),
-                "unpublished":sum(j["result"] is not None and self.unpublished(j) for j in jobs),
+                "unpublished":sum(j["result"] is not None and needs_repair(j) for j in jobs),
                 "deliveries":len(state["deliveries"])}, False
 
     def seed_legacy(self, state, now, records):
@@ -194,16 +207,28 @@ class Coordinator:
         return [(id, j["call"]) for id, j in state["jobs"].items()
                 if j["result"] is None and j["call"] is not None and j["attempt"] is None][:BATCH], False
 
-    def recover(self, state, now, ended):
-        """Accept only verified terminal call IDs, never age out healthy queued calls."""
-        ended = {tuple(pair) for pair in ended}
-        dirty = False
+    @staticmethod
+    def prune_settled(state, now):
         expired = set()
+        for id, job in state["jobs"].items():
+            if needs_repair(job):
+                continue
+            done = job["published_at"] if job["published_at"] is not None else job["terminal_at"]
+            if done is not None and now - done >= RETENTION:
+                expired.add(id)
+        if expired:
+            for id in expired:
+                del state["jobs"][id]
+            state["deliveries"] = {key: id for key, id in state["deliveries"].items()
+                                   if id not in expired}
+        return bool(expired)
+
+    def recover(self, state, now, ended):
+        """Accept only verified terminal call IDs; never age out healthy queued calls."""
+        ended = {tuple(pair) for pair in ended}
+        dirty = self.prune_settled(state, now)
         for id, j in state["jobs"].items():
             if j["result"] is not None:
-                done = j["published_at"] if j["published_at"] is not None else j["terminal_at"]
-                if not self.unpublished(j) and now - done >= RETENTION:
-                    expired.add(id)
                 continue
             if j["attempt"] is not None and now < j["expires_at"]:
                 continue
@@ -217,12 +242,7 @@ class Coordinator:
             elif j["call"] is not None or j["attempt"] is not None:
                 j.update(call=None, dispatch_after=now, attempt=None, dispatch_token=None)
                 dirty = True
-        if expired:
-            for id in expired:
-                del state["jobs"][id]
-            state["deliveries"] = {k: id for k, id in state["deliveries"].items()
-                                   if id not in expired}
-        return None, dirty or bool(expired)
+        return None, dirty
 
     OPERATIONS = {f.__name__: f for f in (
         persist, pending, reserve_dispatch, confirm_dispatch, claim, finish,

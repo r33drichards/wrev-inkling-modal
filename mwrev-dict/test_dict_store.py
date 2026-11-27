@@ -5,7 +5,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 import unittest
 
-from dict_store import Coordinator, DictStore, KEY, LEASE, RETENTION
+from dict_store import Coordinator, DictStore, KEY, LEASE, RETENTION, has_repair_work
 from ingress import Review, app
 from github_app import AccountScope
 from store import UnconfirmedDispatch
@@ -47,6 +47,70 @@ class DictStoreTest(unittest.IsolatedAsyncioTestCase):
 
     async def spawned(self, id):
         return "fc-fixture"
+
+    async def test_repair_probe_skips_missing_and_empty_records_without_writing(self):
+        self.assertFalse(await has_repair_work(self.data))
+        self.assertIsNone(self.data.raw)
+        raw = json.dumps({"schema": 1, "jobs": {}, "deliveries": {}})
+        self.data.raw = raw
+        self.assertFalse(await has_repair_work(self.data))
+        self.assertEqual(self.data.raw, raw)
+
+    async def test_idle_snapshot_then_stranded_webhook_is_visible_next_tick(self):
+        self.assertFalse(await has_repair_work(self.data))
+        id = await self.store.persist(self.event)
+        # Simulate a crash after the atomic persist, before spawn.
+        self.assertTrue(await has_repair_work(self.data))
+        self.assertEqual(await self.store.pending(), [id])
+
+    async def test_repair_probe_keeps_success_until_publication_is_recorded(self):
+        id = await self.store.persist(self.event)
+        await self.store.dispatch(id, self.spawned)
+        self.assertTrue(await has_repair_work(self.data))
+        token, _ = await self.store.claim(id)
+        self.assertTrue(await self.store.remember_comment(id, token, 41))
+        self.assertTrue(await self.store.finish(id, token, {"state": "completed"}))
+        # A stored result still needs both GitHub effects.
+        raw = self.data.raw
+        self.assertTrue(await has_repair_work(self.data))
+        self.assertEqual(self.data.raw, raw)
+        self.assertEqual(len(await self.store.publications()), 1)
+        self.assertTrue(await self.store.mark_published(id, 41))
+        self.assertFalse(await has_repair_work(self.data))
+        self.assertEqual(await self.store.persist(self.event), id)
+
+    async def test_repair_probe_keeps_terminal_failure_without_comment(self):
+        id = await self.store.persist(self.event)
+        token, _ = await self.store.claim(id)
+        self.assertTrue(await self.store.finish(id, token, {"state": "failed"}))
+        self.assertTrue(await has_repair_work(self.data))
+        self.assertEqual(len(await self.store.publications()), 1)
+        self.assertTrue(await self.store.mark_published(id, None))
+        self.assertFalse(await has_repair_work(self.data))
+
+    async def test_webhook_prunes_only_expired_settled_history(self):
+        old = await self.store.persist(self.event)
+        token, _ = await self.store.claim(old)
+        self.assertTrue(await self.store.finish(old, token, {"state": "cancelled"}))
+        self.assertFalse(await has_repair_work(self.data))
+        pending = replace(self.event, delivery="beef", number=5)
+        pending_id = await self.store.persist(pending)
+        token, _ = await self.store.claim(pending_id)
+        self.assertTrue(await self.store.finish(pending_id, token, {"state": "failed"}))
+        self.time += RETENTION + 1
+        # The old review's tombstone is removed when work next arrives. The
+        # other result is still publishable even after the retention window.
+        new_id = await self.store.persist(self.event)
+        self.assertNotEqual(new_id, old)
+        stored = json.loads(self.data.raw)
+        self.assertNotIn(old, stored["jobs"])
+        self.assertNotIn(old, stored["deliveries"].values())
+        self.assertEqual((await self.store.publications())[0][0], pending_id)
+
+    async def test_unknown_dict_schema_is_not_treated_as_idle(self):
+        self.data.raw = json.dumps({"schema": 2, "jobs": {}})
+        with self.assertRaisesRegex(ValueError, "incompatible review state"):
+            await has_repair_work(self.data)
 
     async def test_duplicate_deliveries_and_claims(self):
         unique = [self.event] * 10 + [replace(self.event, delivery="aaaa")]
