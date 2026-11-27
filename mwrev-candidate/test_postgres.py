@@ -73,3 +73,22 @@ class PostgresTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.store.finish(one, attempt, {"state":"completed"}))
         self.assertEqual(await self.store.persist(self.review()), one)
         self.assertNotEqual(await self.store.persist(self.review("new-activation")), one)
+
+    async def test_bridge_attaches_only_existing_active_jobs_and_seed_requires_drain(self):
+        one = await self.store.persist(self.review())
+        self.assertEqual(await self.store.attach_legacy_delivery(self.review("def")), one)
+        self.assertIsNone(await self.store.attach_legacy_delivery(self.review("99","c"*40)))
+        with self.assertRaisesRegex(RuntimeError, "have not drained"):
+            await self.store.settled_manifest()
+        attempt, _ = await self.store.claim(one)
+        self.assertEqual(await self.store.reserve_start_comment(one,attempt), (None,))
+        self.assertTrue(await self.store.remember_comment(one,attempt,13))
+        self.assertTrue(await self.store.finish(one,attempt,{"state":"completed","review":{"findings":[]}}))
+        with self.assertRaisesRegex(RuntimeError, "have not drained"):
+            await self.store.settled_manifest()
+        await self.store.mark_published(one,13)
+        self.assertEqual(await self.store.attach_legacy_delivery(self.review("def")), one)
+        self.assertIsNone(await self.store.attach_legacy_delivery(self.review("face")))
+        id, identity, state, _, deliveries = (await self.store.settled_manifest())[0]
+        self.assertEqual((id,identity,state),(one,[7,11,23,"a"*40,"b"*40],"completed"))
+        self.assertEqual(set(deliveries), {"abc","def"})

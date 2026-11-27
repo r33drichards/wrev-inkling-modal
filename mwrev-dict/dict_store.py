@@ -161,6 +161,35 @@ class Coordinator:
             return True, True
         return False, False
 
+    def status(self, state, now):
+        jobs = state["jobs"].values()
+        return {"active":sum(j["result"] is None for j in jobs),
+                "claimed":sum(self.owns(j, now, j["attempt"]) for j in jobs),
+                "unpublished":sum(j["result"] is not None and self.unpublished(j) for j in jobs),
+                "deliveries":len(state["deliveries"])}, False
+
+    def seed_legacy(self, state, now, records):
+        added = 0
+        for old_id, identity, outcome, timestamp, deliveries in records:
+            id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"mwrev:neon:v1:{identity[0]}:{old_id}"))
+            if id not in state["jobs"]:
+                state["jobs"][id] = {
+                    "identity":list(identity), "result":{"state":outcome},
+                    "published_at":timestamp, "terminal_at":timestamp,
+                    "dispatch_after":timestamp, "dispatch_attempts":0, "dispatch_token":None, "call":None,
+                    "attempt":None, "attempts":0, "expires_at":0, "comment":None, "publish_after":timestamp,
+                }
+                added += 1
+            for delivery in deliveries:
+                key = f"{identity[0]}:{identity[1]}:{delivery.lower()}"
+                existing = state["deliveries"].get(key)
+                if existing is not None and existing != id:
+                    raise ValueError("delivery already belongs to another review")
+                if existing is None:
+                    state["deliveries"][key] = id
+                    added += 1
+        return added, bool(added)
+
     def outstanding_calls(self, state, now):
         return [(id, j["call"]) for id, j in state["jobs"].items()
                 if j["result"] is None and j["call"] is not None and j["attempt"] is None][:BATCH], False
@@ -198,7 +227,7 @@ class Coordinator:
     OPERATIONS = {f.__name__: f for f in (
         persist, pending, reserve_dispatch, confirm_dispatch, claim, finish,
         reserve_start_comment, remember_comment, release_attempt, publications,
-        mark_published, outstanding_calls, recover,
+        mark_published, outstanding_calls, recover, status, seed_legacy,
     )}
 
 

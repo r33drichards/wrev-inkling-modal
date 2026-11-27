@@ -39,6 +39,61 @@ class Store:
                 raise ValueError("delivery identity changed")
             return existing  # connection context commits before result reaches ingress
 
+    async def attach_legacy_delivery(self, review):
+        """Temporary bridge: preserve deduplication against old Neon jobs."""
+        async with await self.connect() as conn:
+            query = await conn.execute("""
+                SELECT r.id,r.pr,r.head,r.base FROM mwrev_delivery d JOIN mwrev_review r ON r.id=d.review_id
+                WHERE d.installation=%s AND d.repository=%s AND d.delivery=%s
+                """, (review.installation,review.repository,review.delivery))
+            found = await query.fetchone()
+            identity = (review.number,review.head,review.base)
+            if found:
+                if found[1:] != identity:
+                    raise ValueError("delivery identity changed")
+                return found[0]
+            query = await conn.execute("""
+                SELECT id FROM mwrev_review WHERE installation=%s AND repository=%s AND pr=%s AND head=%s AND base=%s
+                AND (result IS NULL OR (published_at IS NULL AND (comment_id IS NOT NULL OR result->>'state'='failed')))
+                ORDER BY id LIMIT 1 FOR UPDATE
+                """, (review.installation,review.repository,*identity))
+            active = await query.fetchone()
+            if active is None:
+                return None
+            found = await conn.execute("""
+                INSERT INTO mwrev_delivery (installation,repository,delivery,review_id) VALUES (%s,%s,%s,%s)
+                ON CONFLICT (installation,repository,delivery) DO UPDATE SET delivery=EXCLUDED.delivery
+                RETURNING review_id
+                """, (review.installation,review.repository,review.delivery,active[0]))
+            if (await found.fetchone())[0] != active[0]:
+                raise ValueError("legacy delivery identity changed")
+            return active[0]
+
+    async def settled_manifest(self):
+        # Read only. The bridge never creates new Neon jobs, and this must
+        # refuse a cutover while any legacy external effect is still pending.
+        async with await self.connect() as conn:
+            await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            q = await conn.execute("""
+                SELECT count(*) FROM mwrev_review WHERE result IS NULL OR
+                    (published_at IS NULL AND (comment_id IS NOT NULL OR result->>'state'='failed'))
+                """)
+            pending, = await q.fetchone()
+            if pending:
+                raise RuntimeError("legacy reviews have not drained")
+            # The old database remains the rollback/audit snapshot. Migrate
+            # only recent delivery identities, never finding bodies or secrets.
+            q = await conn.execute("""
+                SELECT r.id, r.installation,r.repository,r.pr,r.head,r.base,r.result->>'state',
+                       extract(epoch from COALESCE(r.published_at,r.created_at)),
+                       array_agg(d.delivery)
+                FROM mwrev_review r JOIN mwrev_delivery d ON d.review_id=r.id
+                WHERE COALESCE(r.published_at,r.created_at) >= now()-interval '7 days'
+                GROUP BY r.id ORDER BY r.id
+                """)
+            return [(id,[i,r,p,h,b],outcome,float(epoch),deliveries)
+                    for id,i,r,p,h,b,outcome,epoch,deliveries in await q.fetchall()]
+
     async def pending(self):
         async with await self.connect() as conn:
             r = await conn.execute("""

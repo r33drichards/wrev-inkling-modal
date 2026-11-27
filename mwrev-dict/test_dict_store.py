@@ -162,3 +162,15 @@ class DictStoreTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.store.persist(self.event),id)
         await self.store.dispatch(id,self.spawned)
         self.assertIsNotNone(await self.store.claim(id))
+
+
+    async def test_legacy_seed_preserves_delivery_and_allows_new_activation(self):
+        identity = [7,11,4,"a"*40,"b"*40]
+        manifest = [(1,identity,"completed",self.time,["deadbeef"])]
+        self.assertEqual(await self.invoke("seed_legacy",manifest),2)
+        self.assertEqual(await self.invoke("seed_legacy",manifest),0)
+        historical = await self.store.persist(self.event)
+        self.assertIsNone(await self.store.claim(historical))
+        active = await self.store.persist(replace(self.event,delivery="face"))
+        self.assertNotEqual(active,historical)
+        self.assertEqual(await self.store.pending(),[active])

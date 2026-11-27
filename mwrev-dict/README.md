@@ -1,8 +1,8 @@
 # Modal Dict state backend prototype
 
-This is a shadow prototype, not a production deployment. The live Modal app
-still uses Neon. The probe uses an ephemeral Dict, synthetic deliveries, and a
-mock CPU reviewer. It needs no production secrets, Postgres, GPU or GitHub app.
+The storage adapter supports an isolated probe and a staged production cutover.
+The probe uses an ephemeral Dict, synthetic deliveries, and mock CPU reviewers.
+It needs no production secrets, Postgres, GPU or GitHub app.
 
 ## Design
 
@@ -35,7 +35,8 @@ mock CPU reviewer. It needs no production secrets, Postgres, GPU or GitHub app.
 ```sh
 PYTHONPATH="$PWD/mwrev-candidate:$PWD/mwrev-service" \
   python3 -m unittest discover -s mwrev-dict -v
-modal run --env main mwrev-dict/modal_probe.py
+modal run --env main mwrev-dict/modal_probe.py::verify
+modal run --env main mwrev-dict/modal_probe.py::signed_queue
 ```
 
 ## Gates before production
@@ -49,3 +50,31 @@ modal run --env main mwrev-dict/modal_probe.py
    acknowledgements using a fixture PR before touching account-wide traffic.
 4. Drain old jobs, preserve existing Neon data, and establish a rollback path
    before any cutover. Do not let two stores consume the same live webhook.
+
+## Production cutover and rollback
+
+The CPU app supports an explicit deployment mode in `MWREV_DEPLOY_BACKEND`:
+`postgres` (legacy only), `bridge` (write new jobs to Dict and finish older Neon
+jobs), or `dict` (default; no Neon credential or operations).
+
+Keep the private `mwrev-state` app independent from `mwrev`. The production
+worker app, including overlapping worker releases, can only write via this
+same coordinator. Do not run a second coordinator against the same named Dict.
+For future coordinator upgrades, quiesce callers, stop the old coordinator
+and verify it is gone before starting a replacement (do not roll it).
+
+1. Create the named durable Dict `mwrev-review-state-v1` in the production
+   environment and deploy only `mwrev-dict/coordinator_app.py`.
+2. Deploy the CPU app with `MWREV_DEPLOY_BACKEND=bridge` and
+   `--strategy recreate`. New jobs go to Dict. Already accepted Neon jobs and
+   their delivery retries retain their original worker and publication state.
+   Check both backends for unfinished jobs.
+3. Invoke the deployed `seed_legacy` function. It refuses to copy while any
+   Neon job awaits review/publication and copies only recent delivery records
+   needed for deduplication (not findings). Keep Neon intact.
+4. Deploy the CPU app with `MWREV_DEPLOY_BACKEND=dict` and
+   `--strategy recreate`. Verify the signed receiver and completion path.
+   The GPU and Railway apps do not change.
+5. To restore the bridge, redeploy the same revision in bridge mode. **Never
+   point new work back to Neon alone while Dict jobs are active.** A full
+   reverse cutover requires draining Dict and preserving its delivery history.
