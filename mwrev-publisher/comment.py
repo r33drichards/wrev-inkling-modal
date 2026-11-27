@@ -47,6 +47,9 @@ def finish(api, *, review_id, head, app_id, comment_id, outcome, findings_count=
     existing = api.get_comment(comment_id)
     if existing is None or not owns(existing, app_id, tag):
         raise RuntimeError("Could not verify the App-owned start comment")
+    if outcome == "completed" and existing.get("body", "").startswith(
+            heading(STATUS["completed"], head)):
+        return outcome  # Publication succeeded on an earlier attempt.
     if outcome == "completed":
         pr = api.get_pull()
         labels = {label["name"] for label in pr.get("labels", [])}

@@ -66,3 +66,10 @@ class PostgresTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(old, new)
         self.assertFalse(await self.store.finish(one, old, {"findings": []}))
         self.assertTrue(await self.store.finish(one, new, {"findings": []}))
+
+    async def test_same_delivery_stays_deduped_but_new_activation_can_rerun(self):
+        one = await self.store.persist(self.review())
+        attempt, _ = await self.store.claim(one)
+        self.assertTrue(await self.store.finish(one, attempt, {"state":"completed"}))
+        self.assertEqual(await self.store.persist(self.review()), one)
+        self.assertNotEqual(await self.store.persist(self.review("new-activation")), one)

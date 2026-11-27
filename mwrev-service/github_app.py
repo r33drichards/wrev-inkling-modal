@@ -93,3 +93,7 @@ class Pull:
     def edit_comment(self, id, body):
         return self.request("PATCH", f"{self.comment_route}/{positive(id)}",
                             self.token, {"body": body})
+
+
+    def clear_trigger(self):
+        return self.request("DELETE", f"{self.root}/issues/{self.pr}/labels/mwrev", self.token)

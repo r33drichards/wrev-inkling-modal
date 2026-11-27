@@ -91,14 +91,31 @@ class Worker:
             await self.store.release_attempt(review_id, attempt)
             return "retry_pending"
 
+    def publish_terminal(self, write, id, head, base, comment_id, result):
+        outcome = result["state"]
+        if comment_id is not None:
+            outcome = finish(write, review_id=id, head=head, app_id=self.config.app_id,
+                             comment_id=comment_id, outcome=outcome,
+                             findings_count=len(result.get("review", {}).get("findings", [])))
+        if outcome not in {"completed", "failed"}:
+            return
+        # Do not clear another revision's trigger. Check after the edit, as
+        # close to the GitHub DELETE as possible.
+        if self.state(write.get_pull(), head, base) != "completed":
+            return
+        try:
+            write.clear_trigger()
+        except Exception:
+            # A successful removal with a lost response is safe to reconcile.
+            if self.state(write.get_pull(), head, base) == "completed":
+                raise
+
     async def publish(self):
         done = 0
-        for id, installation, repo_id, pr, head, comment_id, result in await self.store.publications():
+        for id, installation, repo_id, pr, head, base, comment_id, result in await self.store.publications():
             try:
                 _, _, write = await sync(self.pull, installation, repo_id, pr, write=True)
-                await sync(finish, write, review_id=id, head=head, app_id=self.config.app_id,
-                           comment_id=comment_id, outcome=result["state"],
-                           findings_count=len(result.get("review", {}).get("findings", [])))
+                await sync(self.publish_terminal, write, id, head, base, comment_id, result)
                 await self.store.mark_published(id, comment_id)
                 done += 1
             except Exception:

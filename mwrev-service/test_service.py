@@ -40,3 +40,33 @@ class WorkerTest(IsolatedAsyncioTestCase):
         self.assertEqual(await worker.execute(25), "cancelled")
         worker.review.assert_not_called()
         api.create_comment.assert_not_called()
+
+    def test_clear_after_success_or_failed_review_for_current_revision_only(self):
+        from comment import marker
+        worker = service.Worker(None, SimpleNamespace(app_id=2, comments=True))
+        head,base = "a"*40,"b"*40
+        for outcome in ("completed","failed"):
+            api = Mock()
+            api.get_comment.return_value = {"id":64,"performed_via_github_app":{"id":2},
+                                            "body":"started\n"+marker(25)}
+            api.get_pull.return_value = {"state":"open", "head":{"sha":head},"base":{"sha":base},
+                                         "labels":[{"name":"mwrev"}]}
+            def clear():
+                api.edit_comment.assert_called_once()
+            api.clear_trigger.side_effect = clear
+            worker.publish_terminal(api,25,head,base,64,{"state":outcome,"review":{"findings":[]}})
+            api.clear_trigger.assert_called_once()
+        api.reset_mock()
+        api.get_pull.return_value["head"]["sha"]="c"*40
+        worker.publish_terminal(api,25,head,base,64,{"state":"failed"})
+        api.clear_trigger.assert_not_called()
+
+    def test_failure_without_a_start_comment_still_clears_current_label(self):
+        worker = service.Worker(None, SimpleNamespace(app_id=2, comments=True))
+        head,base = "a"*40,"b"*40
+        api = Mock()
+        api.get_pull.return_value = {"state":"open","head":{"sha":head},"base":{"sha":base},
+                                     "labels":[{"name":"mwrev"}]}
+        worker.publish_terminal(api,25,head,base,None,{"state":"failed"})
+        api.clear_trigger.assert_called_once()
+        api.edit_comment.assert_not_called()

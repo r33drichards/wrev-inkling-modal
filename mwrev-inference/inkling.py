@@ -35,7 +35,7 @@ def server_command():
 @app.function(
     image=image, gpu="B200", cpu=4, memory=16384,
     volumes={CACHE_MOUNT: cache}, min_containers=0,
-    max_containers=1, scaledown_window=60, timeout=240,
+    max_containers=1, scaledown_window=60, timeout=240, startup_timeout=900,
 )
 @modal.web_server(PORT, startup_timeout=900, requires_proxy_auth=True)
 def serve():

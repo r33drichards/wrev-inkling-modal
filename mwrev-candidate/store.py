@@ -10,10 +10,21 @@ class Store:
 
     async def persist(self, review):
         async with await self.connect() as conn:
+            existing = await conn.execute("""
+            SELECT r.id, r.pr, r.head, r.base FROM mwrev_review r
+            JOIN mwrev_delivery d ON d.review_id=r.id
+            WHERE d.installation=%s AND d.repository=%s AND d.delivery=%s
+            """, (review.installation, review.repository, review.delivery))
+            row = await existing.fetchone()
+            if row is not None:
+                if row[1:] != (review.number, review.head, review.base):
+                    raise ValueError("delivery identity changed")
+                return row[0]
             r = await conn.execute("""
             INSERT INTO mwrev_review (installation, repository, pr, head, base)
             VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (installation, repository, pr, head, base)
+            WHERE result IS NULL OR published_at IS NULL AND comment_id IS NOT NULL
             DO UPDATE SET head = EXCLUDED.head RETURNING id
             """, (review.installation, review.repository, review.number, review.head, review.base))
             proposed, = await r.fetchone()
@@ -110,8 +121,9 @@ class Store:
     async def publications(self):
         async with await self.connect() as conn:
             r = await conn.execute("""
-            SELECT id, installation, repository, pr, head, comment_id, result
-            FROM mwrev_review WHERE published_at IS NULL AND comment_id IS NOT NULL
+            SELECT id, installation, repository, pr, head, base, comment_id, result
+            FROM mwrev_review WHERE published_at IS NULL
+            AND (comment_id IS NOT NULL OR result->>'state'='failed')
             AND result IS NOT NULL AND publishing_after<=now() ORDER BY id LIMIT 50
             """)
             return await r.fetchall()
@@ -119,7 +131,7 @@ class Store:
     async def mark_published(self, review_id, comment_id):
         async with await self.connect() as conn:
             await conn.execute("""
-            UPDATE mwrev_review SET published_at=now() WHERE id=%s AND comment_id=%s
+            UPDATE mwrev_review SET published_at=now() WHERE id=%s AND comment_id IS NOT DISTINCT FROM %s
             AND result IS NOT NULL
             """, (review_id, comment_id))
 

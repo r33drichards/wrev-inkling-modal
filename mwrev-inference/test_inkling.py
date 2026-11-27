@@ -31,6 +31,7 @@ class InferenceConfigTest(unittest.TestCase):
         cfg = recorded["function"][1]
         self.assertEqual((cfg["gpu"], cfg["min_containers"], cfg["max_containers"]), ("B200", 0, 1))
         self.assertTrue(recorded["server"][1]["requires_proxy_auth"])
+        self.assertEqual(cfg["startup_timeout"], 900)
         self.assertFalse(recorded["volume"][1]["create_if_missing"])
         cmd = candidate.server_command()
         self.assertNotIn("--max-model-len", cmd)

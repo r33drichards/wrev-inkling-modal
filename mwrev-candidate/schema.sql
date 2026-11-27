@@ -13,8 +13,7 @@ CREATE TABLE IF NOT EXISTS mwrev_review (
     modal_call_id text,
     attempt_token uuid,
     expires_at timestamptz,
-    result jsonb,
-    UNIQUE (installation, repository, pr, head, base)
+    result jsonb
 );
 CREATE TABLE IF NOT EXISTS mwrev_delivery (
     installation bigint NOT NULL,
@@ -31,3 +30,9 @@ ALTER TABLE mwrev_review ADD COLUMN IF NOT EXISTS comment_id bigint;
 ALTER TABLE mwrev_review ADD COLUMN IF NOT EXISTS publishing_after timestamptz NOT NULL DEFAULT now();
 ALTER TABLE mwrev_review ADD COLUMN IF NOT EXISTS published_at timestamptz;
 ALTER TABLE mwrev_review ADD COLUMN IF NOT EXISTS model_attempts integer NOT NULL DEFAULT 0;
+
+
+ALTER TABLE mwrev_review DROP CONSTRAINT IF EXISTS mwrev_review_installation_repository_pr_head_base_key;
+CREATE UNIQUE INDEX IF NOT EXISTS mwrev_active_revision
+ON mwrev_review (installation, repository, pr, head, base)
+WHERE result IS NULL OR published_at IS NULL AND comment_id IS NOT NULL;
