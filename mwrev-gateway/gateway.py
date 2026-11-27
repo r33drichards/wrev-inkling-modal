@@ -21,7 +21,7 @@ def upstream_host(origin: str) -> str:
     host = parts.hostname or ""
     if (parts.scheme != "https" or parts.netloc != host
             or parts.path not in {"", "/"} or parts.query or parts.fragment
-            or not re.fullmatch(r"[a-z0-9-]+\.modal\.run", host)):
+            or not re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)?\.modal\.run", host)):
         raise GatewayError("invalid configured Modal origin")
     return host
 
